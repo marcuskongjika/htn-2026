@@ -1,0 +1,19 @@
+# Gemini API client (current SDK — NOT the deprecated google-generativeai)
+google-genai>=0.3.0
+
+# Camera capture + JPEG encoding
+opencv-python>=4.9.0
+
+# STS3215 smart servo control over USB (bus servo adapter)
+feetech-servo-sdk>=1.0.0
+# Alternative if the above is unavailable on your platform: st3215>=1.1.0
+
+# GPIO access for the HX711 load cell and inductive metal sensor
+gpiozero>=2.0.1
+RPi.GPIO>=0.7.1; platform_machine == "aarch64" or platform_machine == "armv7l"
+
+# .env loading
+python-dotenv>=1.0.1
+
+# Testing (optional but recommended — see tests/)
+pytest>=8.0.0
