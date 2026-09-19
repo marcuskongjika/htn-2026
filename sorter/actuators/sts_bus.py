@@ -57,9 +57,13 @@ ADDR_MODE = 33                # 0 = position servo
 ADDR_TORQUE_ENABLE = 40
 ADDR_ACC = 41                 # start of the 7-byte block write_pos_ex writes
 ADDR_GOAL_POSITION = 42
+ADDR_GOAL_SPEED = 46          # 2 bytes; in wheel mode this IS the command (bit 15 = reverse)
 ADDR_TORQUE_LIMIT = 48        # 2 bytes, 0-1000
 ADDR_LOCK = 55                # 0 = EEPROM writable, 1 = locked
 ADDR_PRESENT_POSITION = 56    # start of the 15-byte feedback block
+
+MODE_POSITION = 0             # go to an angle and hold it
+MODE_WHEEL = 1                # spin continuously at a speed, like a motor
 
 FEEDBACK_LEN = 15
 POSITION_MAX = 4095
@@ -259,6 +263,26 @@ class StsBus:
         for servo_id, position, speed, acc in moves:
             params.append(servo_id)
             params += self._pos_ex_block(position, speed, acc)
+        self._transact(BROADCAST_ID, INST_SYNC_WRITE, bytes(params))
+
+    @staticmethod
+    def _wheel_block(speed: int, acc: int) -> bytes:
+        """Same 7 bytes as _pos_ex_block; wheel mode ignores the position and reads the
+        speed as signed (sign-magnitude, bit 15 = reverse)."""
+        magnitude = min(abs(int(speed)), 0x7FFF)
+        encoded = magnitude | (0x8000 if speed < 0 else 0)
+        return bytes([acc & 0xFF, 0, 0, 0, 0, encoded & 0xFF, encoded >> 8])
+
+    def write_speed(self, servo_id: int, speed: int, acc: int = 0) -> int:
+        """Wheel mode only: spin at speed steps/s (negative = reverse, 0 = stop)."""
+        return self.write(servo_id, ADDR_ACC, self._wheel_block(speed, acc))
+
+    def sync_write_speed(self, spins: list[tuple[int, int, int]]) -> None:
+        """Wheel mode, several servos in one packet. spins = [(id, speed, acc), ...]. No replies."""
+        params = bytearray([ADDR_ACC, 7])
+        for servo_id, speed, acc in spins:
+            params.append(servo_id)
+            params += self._wheel_block(speed, acc)
         self._transact(BROADCAST_ID, INST_SYNC_WRITE, bytes(params))
 
     def feedback(self, servo_id: int) -> dict:
