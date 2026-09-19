@@ -1,18 +1,17 @@
-"""STS3215 smart servo wrapper (two servos, IDs from config), driven over
-USB via a bus servo adapter using the Feetech/Waveshare STServo SDK
-(distributed as `feetech-servo-sdk` or `st3215` on PyPI, both of which
-expose the same underlying `STservo_sdk` module: `PortHandler` for the
-serial link and `sts` as the ST-protocol packet handler).
+"""STS3215 smart servo wrapper (servo IDs from config), driven directly from
+the Pi's UART through actuators/sts_bus.py - no bus adapter board and no
+vendor SDK in between. See sts_bus.py for the wiring and the protocol.
 
-Real mode opens the serial port and drives both servos. Mock mode just logs
-the intended move instead of opening a serial port, so this module is safe
-to exercise from a laptop with nothing plugged in.
+Real mode opens the serial port, checks every configured servo answers a
+ping, and enables torque. Mock mode just logs the intended move instead of
+opening a serial port, so this module is safe to exercise from a laptop with
+nothing plugged in.
 
-NOTE for hardware bring-up: verify `WritePosEx`/`ReadPos` argument order
-against whichever SDK version actually installs (`pip show feetech-servo-sdk`
-or `st3215`) — vendor SDK method signatures have drifted across releases.
-Do this during the "bring up both servos over USB" bring-up step in the
-README before trusting move_safe()/move_flagged() on real hardware.
+SERVO_ID_SAFE_GATE and SERVO_ID_FLAGGED_GATE may be the same ID: that is the
+single-servo build, where one servo tilts the bed either way from home.
+
+For hardware bring-up use the bus tools first (README, "Servo bring-up"):
+`python -m actuators.sts_bus loopback`, then `scan`, before running this.
 """
 from __future__ import annotations
 
@@ -27,66 +26,72 @@ log = logging.getLogger(__name__)
 class ServoController:
     def __init__(self, mock: bool | None = None) -> None:
         self.mock = config.MOCK_HARDWARE if mock is None else mock
-        self._port_handler = None
-        self._packet_handler = None
+        self._bus = None
+        # dict.fromkeys keeps order and drops the duplicate in the single-servo build
+        self._ids = list(dict.fromkeys([config.SERVO_ID_SAFE_GATE, config.SERVO_ID_FLAGGED_GATE]))
 
         if self.mock:
             log.info("ServoController running in MOCK mode (no serial port opened)")
             return
 
-        from STservo_sdk import PortHandler, sts  # type: ignore[import-not-found]
+        from actuators.sts_bus import StsBus
 
-        self._port_handler = PortHandler(config.SERVO_PORT)
-        self._packet_handler = sts(self._port_handler)
+        self._bus = StsBus(config.SERVO_PORT, config.SERVO_BAUDRATE)
 
-        if not self._port_handler.openPort():
-            raise RuntimeError(f"Failed to open servo serial port {config.SERVO_PORT}")
-        if not self._port_handler.setBaudRate(config.SERVO_BAUDRATE):
-            raise RuntimeError(f"Failed to set baud rate {config.SERVO_BAUDRATE}")
+        missing = [sid for sid in self._ids if not self._bus.ping(sid)]
+        if missing:
+            self._bus.close()
+            raise RuntimeError(
+                f"servo ID(s) {missing} did not answer on {config.SERVO_PORT} "
+                "(run `python -m actuators.sts_bus scan --all` to see what is on the bus)"
+            )
+        for sid in self._ids:
+            self._bus.set_torque(sid, True)
 
-        log.info(
-            "ServoController opened %s @ %d baud for servo IDs %d, %d",
-            config.SERVO_PORT,
-            config.SERVO_BAUDRATE,
-            config.SERVO_ID_SAFE_GATE,
-            config.SERVO_ID_FLAGGED_GATE,
-        )
+        log.info("ServoController ready on %s, servo IDs %s", config.SERVO_PORT, self._ids)
 
     def _move(self, servo_id: int, position: int) -> None:
         if self.mock:
             log.info("[MOCK] servo %d -> position %d", servo_id, position)
             return
 
-        result, error = self._packet_handler.WritePosEx(
-            servo_id, position, config.SERVO_MOVE_SPEED, 0
-        )
-        if result != 0:
-            raise RuntimeError(
-                f"servo {servo_id} write failed: comm result={result} error={error}"
-            )
+        error = self._bus.write_pos_ex(servo_id, position, config.SERVO_MOVE_SPEED, config.SERVO_MOVE_ACC)
+        if error:
+            log.warning("servo %d reported error byte 0x%02x", servo_id, error)
         log.info("servo %d -> position %d", servo_id, position)
 
+    def _tilt(self, active_id: int, position: int) -> None:
+        """Send one servo to `position`, and any other servo back to home."""
+        self._move(active_id, position)
+        for sid in self._ids:
+            if sid != active_id:
+                self._move(sid, config.SERVO_HOME_POSITION)
+        time.sleep(config.SERVO_MOVE_SETTLE_S)
+
     def home(self) -> None:
-        """Return both servos to the neutral/home position."""
-        self._move(config.SERVO_ID_SAFE_GATE, config.SERVO_HOME_POSITION)
-        self._move(config.SERVO_ID_FLAGGED_GATE, config.SERVO_HOME_POSITION)
+        """Return every servo to the neutral/home position."""
+        for sid in self._ids:
+            self._move(sid, config.SERVO_HOME_POSITION)
         time.sleep(config.SERVO_MOVE_SETTLE_S)
 
     def move_safe(self) -> None:
         """Tilt the item into the 'safe' bin."""
-        self._move(config.SERVO_ID_SAFE_GATE, config.SERVO_SAFE_POSITION)
-        self._move(config.SERVO_ID_FLAGGED_GATE, config.SERVO_HOME_POSITION)
-        time.sleep(config.SERVO_MOVE_SETTLE_S)
+        self._tilt(config.SERVO_ID_SAFE_GATE, config.SERVO_SAFE_POSITION)
 
     def move_flagged(self) -> None:
         """Tilt the item into the 'flagged' (likely battery) bin."""
-        self._move(config.SERVO_ID_FLAGGED_GATE, config.SERVO_FLAGGED_POSITION)
-        self._move(config.SERVO_ID_SAFE_GATE, config.SERVO_HOME_POSITION)
-        time.sleep(config.SERVO_MOVE_SETTLE_S)
+        self._tilt(config.SERVO_ID_FLAGGED_GATE, config.SERVO_FLAGGED_POSITION)
 
     def close(self) -> None:
-        if not self.mock and self._port_handler is not None:
-            self._port_handler.closePort()
+        if self.mock or self._bus is None:
+            return
+        try:
+            self.home()
+            for sid in self._ids:
+                self._bus.set_torque(sid, False)
+        finally:
+            self._bus.close()
+            self._bus = None
             log.info("Servo serial port closed")
 
 

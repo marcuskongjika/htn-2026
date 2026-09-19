@@ -71,18 +71,26 @@ CAMERA_INDEX: int = 0
 CAMERA_JPEG_QUALITY: int = 90
 MOCK_CAMERA_PLACEHOLDER_JPEG: Path = Path(__file__).resolve().parent / "vision" / "assets" / "placeholder.jpg"
 
-# --- Servos (feetech-servo-sdk / st3215) ------------------------------------
-SERVO_PORT: str = os.getenv("SERVO_PORT", "/dev/ttyACM0")
+# --- Servos (STS3215, driven directly from the Pi's UART) -------------------
+# No bus adapter board: the header UART talks to the servo's one-wire data
+# line, and actuators/sts_bus.py handles the half-duplex framing.
+#   GPIO14 TX (physical pin 8) --[1k]--+
+#   GPIO15 RX (physical pin 10) -------+---- servo DATA
+# /dev/ttyAMA0 is the header UART on a Pi 5 (needs `dtparam=uart0=on` in
+# /boot/firmware/config.txt). To go back to a USB bus adapter, set
+# SERVO_PORT=/dev/ttyACM0 in .env - nothing else changes.
+SERVO_PORT: str = os.getenv("SERVO_PORT", "/dev/ttyAMA0")
 SERVO_BAUDRATE: int = 1_000_000
-SERVO_ID_SAFE_GATE: int = 1
-SERVO_ID_FLAGGED_GATE: int = 2
+SERVO_ID_SAFE_GATE: int = int(os.getenv("SERVO_ID_SAFE_GATE", "1"))
+SERVO_ID_FLAGGED_GATE: int = int(os.getenv("SERVO_ID_FLAGGED_GATE", "2"))
 
 # Position placeholders (STS3215 range is 0-4095 for a 360-degree servo).
 # TUNE THESE on real hardware during bring-up.
 SERVO_HOME_POSITION: int = 2048
 SERVO_SAFE_POSITION: int = 1024
 SERVO_FLAGGED_POSITION: int = 3072
-SERVO_MOVE_SPEED: int = 800
+SERVO_MOVE_SPEED: int = 800   # steps/s (4096 steps = one turn); 0 would mean "no cap"
+SERVO_MOVE_ACC: int = 50      # x100 steps/s^2; 0 would mean "no ramp"
 SERVO_MOVE_SETTLE_S: float = 1.0
 
 # --- Logging -----------------------------------------------------------

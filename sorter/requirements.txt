@@ -4,9 +4,9 @@ google-genai>=0.3.0
 # Camera capture + JPEG encoding
 opencv-python>=4.9.0
 
-# STS3215 smart servo control over USB (bus servo adapter)
-feetech-servo-sdk>=1.0.0
-# Alternative if the above is unavailable on your platform: st3215>=1.1.0
+# STS3215 smart servos, driven straight from the Pi's UART by actuators/sts_bus.py
+# (no vendor SDK - the protocol layer is ours)
+pyserial>=3.5
 
 # GPIO access for the HX711 load cell and inductive metal sensor
 gpiozero>=2.0.1
