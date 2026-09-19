@@ -2,8 +2,9 @@
 
 Raspberry Pi 5 pipeline that flags waste items likely to contain a hidden
 battery. A load cell (HX711) and an inductive metal sensor cross-check a
-Gemini photo classification of the item's material, then drive two STS3215
-smart servos to tilt the item into a "safe" or "flagged" bin.
+Gemini photo classification of the item's material, then drive STS3215
+smart servos to tilt the item into a "safe" or "flagged" bin. The servos are
+driven straight from the Pi's UART pins - there is no bus adapter board.
 
 The pipeline is an explicit state machine (`main.py`):
 
@@ -94,10 +95,9 @@ everything in and running `main.py` cold:
    metal.** Wave a metal object near the sensor face and confirm
    `metal_present` flips (LOW = detected, per the sensor's active-low
    wiring).
-5. **Bring up both servos over USB one at a time, confirm IDs 1 and 2
-   respond independently.** Run `python -m actuators.servo_controller`
-   with only one servo connected at a time first, watching for the correct
-   ID responding, before connecting both.
+5. **Bring up the servo bus — see "Servo bring-up" below.** Loopback first
+   (no servo attached), then scan, then a single move with the horn free,
+   and only then `python -m actuators.servo_controller`.
 6. **Run `logic/decision.py`'s fusion function against printed
    sensor/vision output with servos disconnected.** Feed real
    weight/metal/material readings from steps 2-4 into `fuse()` by hand (or
@@ -106,6 +106,68 @@ everything in and running `main.py` cold:
 7. **Run `main.py` fully on the shared battery rail with a real test
    item.** Only after 1-6 pass, set `MOCK_HARDWARE=0` and run
    `python main.py` with power to the full system and a real item.
+
+## Servo bring-up (direct UART, no adapter board)
+
+The STS3215 talks half-duplex serial at 1 Mbps on a single data wire.
+`actuators/sts_bus.py` speaks that protocol over the Pi's own UART and does
+the job the USB adapter board used to do (framing, discarding its own echo,
+parsing replies). No vendor SDK is involved.
+
+### One-time Pi setup
+
+On a Pi 5 the header UART (GPIO14/15) is off by default. Add to
+`/boot/firmware/config.txt` and reboot:
+
+```
+dtparam=uart0=on
+```
+
+It appears as `/dev/ttyAMA0` (the default `SERVO_PORT`). Check with
+`pinctrl get 14,15` - the pins should show `TXD0` / `RXD0`. If
+`/boot/firmware/cmdline.txt` contains `console=ttyAMA0` or a
+`serial-getty@ttyAMA0` service is running, remove/disable it so nothing else
+writes to the servo bus. The user must be in the `dialout` group.
+
+### Wiring
+
+```
+Pi GPIO14 (TX, pin 8)  --[ 1 kOhm ]--+
+Pi GPIO15 (RX, pin 10) --------------+---- servo DATA
+Pi GND (pin 6) --------------------------- servo GND  and  battery -
+battery + -------------------------------- servo V+        (NEVER to the Pi)
+```
+
+The resistor is what makes one wire work both ways: the Pi drives the line
+through it, and the servo can still pull the line when it replies. TX idling
+high through the resistor is also the line's pull-up.
+
+**Before connecting RX:** power the servo on its own and measure DATA to GND
+with a multimeter. It must be 3.6 V or less. If it is near 5 V, put a voltage
+divider or level shifter in front of GPIO15 - the Pi's pins are 3.3 V.
+
+### Bring-up order
+
+```bash
+python -m actuators.sts_bus loopback      # 1. NO servo attached. Proves the UART runs at 1 Mbps and RX sees TX
+python -m actuators.sts_bus scan --all    # 2. servo attached + powered: lists every ID that answers
+python -m actuators.sts_bus watch 1       # 3. torque off; turn the horn by hand and read the ticks (pose recording)
+python -m actuators.sts_bus move 1 2048   # 4. one move, horn free
+python -m actuators.servo_controller      # 5. home -> safe -> flagged -> home (MOCK_HARDWARE=0)
+```
+
+The bus reports *which side* is broken instead of a generic timeout:
+
+| Error | Meaning | Look at |
+|---|---|---|
+| `BusWiringError` | We sent bytes and heard nothing, not even our own echo | TX/RX tie, UART enabled, right `/dev/tty*` |
+| `BusContentionError` | What we heard while sending wasn't what we sent | Short, second device on the line, bad ground |
+| `ServoTimeout` | Echo was perfect, the servo said nothing | Servo power, the 3-pin cable, servo ID, baud rate |
+
+Servo IDs come from `.env` (`SERVO_ID_SAFE_GATE`, `SERVO_ID_FLAGGED_GATE`).
+Setting both to the same ID is the single-servo build: one servo tilts either
+way from home. A USB bus adapter still works - set `SERVO_PORT=/dev/ttyACM0`;
+the echo is auto-detected either way.
 
 ## Fusion rule
 
@@ -129,11 +191,13 @@ sorter/
 │   ├── camera.py                 # OpenCV frame capture
 │   └── classifier.py             # Gemini material classification
 ├── actuators/
-│   └── servo_controller.py       # STS3215 servo wrapper
+│   ├── sts_bus.py                # STS servo protocol over the Pi UART (half-duplex) + bring-up CLI
+│   └── servo_controller.py       # home / move_safe / move_flagged on top of sts_bus
 ├── logic/
 │   └── decision.py               # pure fusion function
 ├── tests/
-│   └── test_decision.py          # unit tests for the fusion rule
+│   ├── test_decision.py          # unit tests for the fusion rule
+│   └── test_sts_bus.py           # servo bus tests against a fake wire + fake servo
 ├── main.py                       # the state machine loop
 ├── .env.example
 ├── requirements.txt
