@@ -23,6 +23,10 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
+
+# So this runs both as `python -m ...` from sorter/ and directly as `python <file>.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
 from actuators.sts_bus import ADDR_MODE, ADDR_TORQUE_LIMIT, POSITION_MAX, TICKS_PER_REV, StsBus, StsBusError
