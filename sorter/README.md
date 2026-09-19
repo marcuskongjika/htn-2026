@@ -152,7 +152,9 @@ divider or level shifter in front of GPIO15 - the Pi's pins are 3.3 V.
 python -m actuators.sts_bus loopback      # 1. NO servo attached. Proves the UART runs at 1 Mbps and RX sees TX
 python -m actuators.sts_bus scan --all    # 2. servo attached + powered: lists every ID that answers
 python -m actuators.sts_bus watch 1       # 3. torque off; turn the horn by hand and read the ticks (pose recording)
-python -m actuators.sts_bus move 1 2048   # 4. one move, horn free
+python -m tools.nudge 1                   # 4. first motion: +100 ticks slowly at 30% torque, then back. Asks before moving;
+                                          #    refuses if the servo's stored angle limits would turn it into a big swing
+python -m actuators.sts_bus move 1 2048   #    then a full move to centre, horn free
 python -m actuators.servo_controller      # 5. home -> safe -> flagged -> home (MOCK_HARDWARE=0)
 ```
 
@@ -197,7 +199,10 @@ sorter/
 │   └── decision.py               # pure fusion function
 ├── tests/
 │   ├── test_decision.py          # unit tests for the fusion rule
-│   └── test_sts_bus.py           # servo bus tests against a fake wire + fake servo
+│   ├── test_sts_bus.py           # servo bus tests against a fake wire + fake servo
+│   └── test_nudge.py             # nudge tool against a simulated moving servo
+├── tools/
+│   └── nudge.py                  # first-motion test: small, slow, gentle move and back
 ├── main.py                       # the state machine loop
 ├── .env.example
 ├── requirements.txt

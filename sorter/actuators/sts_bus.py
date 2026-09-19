@@ -227,6 +227,22 @@ class StsBus:
     def set_torque(self, servo_id: int, enabled: bool) -> int:
         return self.write_byte(servo_id, ADDR_TORQUE_ENABLE, 1 if enabled else 0)
 
+    def angle_limits(self, servo_id: int) -> tuple[int, int]:
+        """(min, max) goal position the servo will accept. It clamps anything outside."""
+        return self.read_word(servo_id, ADDR_MIN_ANGLE_LIMIT), self.read_word(servo_id, ADDR_MAX_ANGLE_LIMIT)
+
+    def set_angle_limits(self, servo_id: int, lower: int, upper: int) -> None:
+        """Write the limits to EEPROM (unlock, write, lock). EEPROM has a finite
+        write life, so this skips the write when the stored values already match."""
+        if self.angle_limits(servo_id) == (lower, upper):
+            return
+        self.write_byte(servo_id, ADDR_LOCK, 0)
+        try:
+            self.write_word(servo_id, ADDR_MIN_ANGLE_LIMIT, lower)
+            self.write_word(servo_id, ADDR_MAX_ANGLE_LIMIT, upper)
+        finally:
+            self.write_byte(servo_id, ADDR_LOCK, 1)
+
     @staticmethod
     def _pos_ex_block(position: int, speed: int, acc: int) -> bytes:
         """The 7 bytes at ADDR_ACC: acc, position lo/hi, time 0/0, speed lo/hi."""

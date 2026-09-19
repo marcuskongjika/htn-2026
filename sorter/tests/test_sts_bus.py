@@ -185,6 +185,20 @@ def test_write_then_read_back():
     assert bus.read_word(7, 9) == 1650
 
 
+def test_angle_limits_written_once_and_eeprom_relocked():
+    bus, wire = make_bus(servo_id=43)
+    wire.registers[9:13] = (2863).to_bytes(2, "little") + (3459).to_bytes(2, "little")
+    assert bus.angle_limits(43) == (2863, 3459)
+
+    bus.set_angle_limits(43, 0, 4095)
+    assert bus.angle_limits(43) == (0, 4095)
+    assert wire.registers[55] == 1  # locked again
+
+    writes_before = len(wire.sent)
+    bus.set_angle_limits(43, 0, 4095)  # already stored: reads only, no EEPROM write
+    assert all(packet[4] != 0x03 for packet in wire.sent[writes_before:])
+
+
 def test_feedback_decoding():
     bus, wire = make_bus(servo_id=1)
     block = bytearray(15)
