@@ -73,6 +73,55 @@ needed):
 python -m pytest tests/test_decision.py -v
 ```
 
+## Testing
+
+All of these run without hardware. Activate the venv first (`source .venv/bin/activate`).
+
+**Mock Gemini + decision unit tests** (offline, no API key, no camera):
+
+```bash
+python -m pytest tests/test_classifier.py tests/test_decision.py -v
+```
+
+`test_classifier.py` mocks Gemini two ways: the built-in canned-response path,
+and a *fake `google.genai` SDK* injected into `sys.modules` so the real
+request-build / JSON-parse code in `classify_material` runs offline. It also
+covers fail-toward-"flagged" behavior on malformed output, errors, and timeouts.
+
+**Webcam smoke test** (real camera capture + *mocked* Gemini) — captures one
+frame from this machine's webcam, verifies the JPEG, then classifies it in mock
+mode so no API quota is spent:
+
+```bash
+python -m tests.webcam_smoke              # camera index 0 (default webcam)
+python -m tests.webcam_smoke --index 1    # a different camera
+python -m tests.webcam_smoke --real-gemini  # real camera + REAL Gemini (needs GEMINI_API_KEY)
+```
+
+> **WSL2 note:** OpenCV inside WSL2 cannot see the Windows webcam — there is no
+> `/dev/video*` unless you attach the USB device with `usbipd-win` and run a
+> UVC-capable WSL kernel. The simplest path on Windows+WSL is to run the webcam
+> test under **Windows Python** instead:
+>
+> ```powershell
+> cd <repo>\sorter
+> python -m venv .venv-win
+> .venv-win\Scripts\activate
+> pip install opencv-python python-dotenv google-genai
+> python -m tests.webcam_smoke --real-gemini
+> ```
+
+**Seeing how Gemini categorizes an item** — `--real-gemini` above prints the raw
+JSON verdict (`material`, `likely_contains_battery`, `confidence`). You can also
+run the classifier standalone against the real API (`MOCK_HARDWARE=0`, key set):
+
+```bash
+python -m vision.classifier   # captures a frame and prints the classification
+```
+
+Both `vision/classifier.py` and `main.py` also log `Gemini classification: {...}`
+/ `classified: {...}` at INFO to stdout and `logs/sorter.log`.
+
 ## Hardware bring-up order (on the real Pi)
 
 Bring the system up incrementally, in this order, rather than plugging
