@@ -1,23 +1,23 @@
 """Plastic sorter state machine.
 
-    SENSING -> (detected) -> ACTUATING -> HOLDING -> RESETTING -> SENSING
-       '------ (nothing detected: keep sensing) ------'
+    WAITING -> (weight sensed) -> SENSING -> ACTUATING -> HOLDING -> RESETTING -> WAITING
+       '------------- (below trigger: keep polling) -------------'
 
-There is no load cell yet, so nothing waits on weight: the loop senses the
-whole time. Each SENSING round reads the metal sensor and classifies the
-camera frame for plastic. If something sortable is detected (metal, or Gemini
-says plastic) it tilts the bed to min/max, HOLDS for a few seconds, then
-returns to level and resumes sensing. With no metal and no plastic the bed
-stays at level. Sensing never runs while the servos are moving or holding —
-the states are sequential.
+The load cell gates the whole pipeline: nothing is captured until an item's
+weight crosses WEIGHT_TRIGGER_G. On a trigger, SENSING lets the weight settle,
+then reads the metal sensor and classifies the camera frame for plastic, and
+the servo bed tilts (plastic with no metal -> min; everything else -> max),
+HOLDS for a few seconds, returns to level, and waits for the next item.
+Sensing never runs while the servos are moving or holding — the states are
+sequential.
 
 Every state transition and sensor/decision value is logged, with timestamps,
 to stdout and a rotating log file. Each step is wrapped in try/except so a bad
 frame or dropped API call forces a return to level instead of hanging.
 
 Run with MOCK_HARDWARE=1 (the default) to exercise the loop on a laptop with
-no hardware attached; `--cycles N` stops after N tilts (handy for a bounded
-mock demo).
+no hardware attached (the mock load cell's baseline weight sits above the
+trigger, so it fires every loop); `--cycles N` stops after N cycles.
 """
 from __future__ import annotations
 
@@ -29,7 +29,8 @@ import time
 
 import config
 from actuators.servo_pair import ServoPair
-from logic.decision import decide_side
+from logic.decision import sort_side
+from sensors.load_cell import LoadCell
 from sensors.metal_sensor import MetalSensor
 from vision.camera import capture_frame
 from vision.classifier import classify_material
@@ -38,6 +39,7 @@ log = logging.getLogger("sorter")
 
 
 class State(enum.Enum):
+    WAITING = "WAITING"
     SENSING = "SENSING"
     ACTUATING = "ACTUATING"
     HOLDING = "HOLDING"
@@ -70,11 +72,13 @@ def _configure_logging() -> None:
 
 class SorterStateMachine:
     def __init__(self) -> None:
-        self.state = State.SENSING
+        self.state = State.WAITING
+        self.load_cell = LoadCell()
         self.metal_sensor = MetalSensor()
         self.pair = ServoPair((config.SERVO_LEADER_ID, config.SERVO_FOLLOWER_ID))
 
         # Populated across a single pass through the pipeline.
+        self.weight_g: float = 0.0
         self.metal_present: bool = False
         self.classification: dict = {}
         self.plastic: bool = False
@@ -82,6 +86,10 @@ class SorterStateMachine:
         self.cycles_done: int = 0
 
         log.info("State machine initialized (MOCK_HARDWARE=%s)", config.MOCK_HARDWARE)
+        # Tare the empty scale on real hardware only; the mock stays un-tared so
+        # its baseline weight keeps crossing the trigger for demos.
+        if not config.MOCK_HARDWARE:
+            self.load_cell.tare()
         self.pair.go_level()
 
     def _transition(self, new_state: State) -> None:
@@ -89,36 +97,46 @@ class SorterStateMachine:
         self.state = new_state
 
     def _reset_item_state(self) -> None:
+        self.weight_g = 0.0
         self.metal_present = False
         self.classification = {}
         self.plastic = False
         self.side = None
 
     def close(self) -> None:
-        """Release the servo bus (torque off) and the sensor. Safe to call twice."""
+        """Release the servo bus (torque off) and the sensors. Safe to call twice."""
         try:
             self.pair.close()
         finally:
             self.metal_sensor.close()
+            self.load_cell.close()
 
     # -- state handlers -----------------------------------------------------
+    def _handle_waiting(self) -> None:
+        """Poll the load cell; a weight over the trigger means an item was placed."""
+        weight = self.load_cell.read_weight_g(samples=3)
+        log.debug("waiting: weight=%.2fg (trigger=%.2fg)", weight, config.WEIGHT_TRIGGER_G)
+        if weight >= config.WEIGHT_TRIGGER_G:
+            log.info("weight trigger crossed: %.2fg >= %.2fg", weight, config.WEIGHT_TRIGGER_G)
+            self._transition(State.SENSING)
+        else:
+            time.sleep(config.IDLE_POLL_INTERVAL_S)
+
     def _handle_sensing(self) -> None:
-        """Read both sensors once. Tilt if something is detected, else keep sensing."""
+        """Item confirmed present by weight: read metal + classify, then decide."""
+        self.weight_g = self.load_cell.stable_reading()  # let the item settle before the photo
         self.metal_present = self.metal_sensor.is_metal_present()
         self.classification = classify_material(capture_frame())
         self.plastic = bool(self.classification.get("plastic", False))
-        self.side = decide_side(self.plastic, self.metal_present)
+        self.side = sort_side(self.plastic, self.metal_present)
         log.info(
-            "sensed: metal_present=%s plastic=%s -> side=%s (classification=%s)",
+            "sensed: weight=%.2fg metal_present=%s plastic=%s -> side=%s (classification=%s)",
+            self.weight_g,
             self.metal_present,
             self.plastic,
             self.side,
             self.classification,
         )
-        if self.side is None:
-            # Nothing sortable on the bed: stay level, sample again shortly.
-            time.sleep(config.SENSE_INTERVAL_S)
-            return
         self._transition(State.ACTUATING)
 
     def _handle_actuating(self) -> None:
@@ -133,9 +151,14 @@ class SorterStateMachine:
 
     def _handle_resetting(self) -> None:
         self.pair.go_level()
+        time.sleep(config.RESETTING_PAUSE_S)
+        # The bed is empty after the dump: re-zero the drift on real hardware
+        # (skip in mock so the baseline weight keeps triggering).
+        if not config.MOCK_HARDWARE:
+            self.load_cell.tare()
         self._reset_item_state()
         self.cycles_done += 1
-        self._transition(State.SENSING)
+        self._transition(State.WAITING)
 
     _HANDLERS = None  # populated after class body, see below
 
@@ -162,6 +185,7 @@ class SorterStateMachine:
 
 
 SorterStateMachine._HANDLERS = {
+    State.WAITING: SorterStateMachine._handle_waiting,
     State.SENSING: SorterStateMachine._handle_sensing,
     State.ACTUATING: SorterStateMachine._handle_actuating,
     State.HOLDING: SorterStateMachine._handle_holding,

@@ -141,8 +141,6 @@ LOG_BACKUP_COUNT: int = 3
 RESETTING_PAUSE_S: float = 1.5  # settle time before returning to IDLE
 IDLE_POLL_INTERVAL_S: float = 0.1
 
-# --- Sensing loop -------------------------------------------------------
-# main.py senses continuously (no load cell / weight trigger). Env-overridable
-# so the mock demo can use a short hold.
-SENSE_INTERVAL_S: float = float(os.getenv("SENSE_INTERVAL_S", "1.0"))  # pause between rounds when nothing is detected
-TILT_HOLD_S: float = float(os.getenv("TILT_HOLD_S", "5.0"))            # hold at min/max before returning to level
+# --- Sorting loop -------------------------------------------------------
+# Env-overridable so the mock demo can use a short hold.
+TILT_HOLD_S: float = float(os.getenv("TILT_HOLD_S", "5.0"))  # hold at min/max before returning to level

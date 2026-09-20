@@ -9,18 +9,19 @@ the item into the "plastic" bin or the "other" bin. Clean plastic (Gemini says
 plastic AND no metal detected) goes one way; everything else goes the other.
 
 
-The pipeline is an explicit state machine (`main.py`) that senses continuously
-— there is no load cell yet, so nothing waits on weight:
+The pipeline is an explicit state machine (`main.py`) gated by the load cell —
+nothing is captured until an item's weight is sensed:
 
 ```
-SENSING -> (item detected) -> ACTUATING -> HOLDING -> RESETTING -> SENSING
-   '------------ (nothing detected: keep sensing) ------------'
+WAITING -> (weight >= WEIGHT_TRIGGER_G) -> SENSING -> ACTUATING -> HOLDING -> RESETTING -> WAITING
+   '-------------------- (below trigger: keep polling) --------------------'
 ```
 
-Each SENSING round reads the metal sensor and classifies the camera frame. If
-metal is detected, or Gemini says plastic, it tilts the bed (metal -> max;
-plastic with no metal -> min), holds for `TILT_HOLD_S` (default 5 s), returns to
-level, and resumes. With no metal and no plastic the bed stays at level.
+WAITING polls the load cell. When an item's weight crosses `WEIGHT_TRIGGER_G`,
+SENSING lets it settle, reads the metal sensor, and classifies the camera frame;
+the bed then tilts (plastic with no metal -> min; everything else -> max), holds
+for `TILT_HOLD_S` (default 5 s), returns to level, and waits for the next item.
+On real hardware the load cell tares at start-up and after each dump.
 
 Every hardware-touching module (`sensors/`, `vision/camera.py`,
 `actuators/`) has a **mock mode** that returns synthetic data instead of
@@ -60,17 +61,18 @@ MOCK_HARDWARE=1   # 1 on a laptop with no hardware, 0 on the Pi with hardware at
 
 With `MOCK_HARDWARE=1` (the default), the whole pipeline — including a
 canned Gemini-shaped response, no network call — runs end to end on a
-laptop. It senses continuously, so it runs until Ctrl+C:
+laptop. The mock load cell's baseline weight sits above `WEIGHT_TRIGGER_G`, so
+it fires every loop; it runs until Ctrl+C:
 
 ```bash
-python main.py                                        # runs until Ctrl+C
-TILT_HOLD_S=1 SENSE_INTERVAL_S=0 python main.py --cycles 2   # bounded demo: 2 tilts, short hold
+python main.py                                # runs until Ctrl+C
+TILT_HOLD_S=1 python main.py --cycles 2       # bounded demo: 2 cycles, short hold
 ```
 
-`--cycles N` stops after N completed tilts; `TILT_HOLD_S` / `SENSE_INTERVAL_S`
-tune the hold and the idle sampling pause. Every state transition and
-sensor/decision value is logged to stdout and to `logs/sorter.log` (rotating,
-see `config.LOG_MAX_BYTES` / `LOG_BACKUP_COUNT`).
+`--cycles N` stops after N completed cycles; `TILT_HOLD_S` tunes the hold at the
+tilt. Every state transition and sensor/decision value is logged to stdout and
+to `logs/sorter.log` (rotating, see `config.LOG_MAX_BYTES` /
+`config.LOG_BACKUP_COUNT`).
 
 To test just the material classifier against the real Gemini API while
 everything else stays mocked, set `MOCK_HARDWARE=0` but note that will also
@@ -243,15 +245,15 @@ bed tilts:
   sensor must read no metal.
 - **metal, or anything not called plastic → the other bin** (`go_max()`). Metal
   is a fast, high-precision veto.
-- **no metal AND not plastic → nothing to sort**: `decide_side()` returns `None`,
-  so the bed stays at level and keeps sensing (it never tilts an empty bed).
 
-The bed rests at `go_level()` between items. There is no load cell yet, so
-sensing is not weight-gated. Gemini still reports `likely_contains_battery`, but
-it is logged only and no longer influences sorting. The classifier fails toward
+The load cell gates the pipeline, so an item is only classified and sorted once
+its weight is sensed — every weighed item goes to one of the two bins (there is
+no "stay level" case; presence is already confirmed by weight). The bed rests at
+`go_level()` between items. Gemini still reports `likely_contains_battery`, but it
+is logged only and no longer influences sorting. The classifier fails toward
 `plastic=False` on errors/timeouts, so an unreachable model treats the item as
-non-plastic. To flip which physical side is which, swap `PLASTIC_BIN`/`OTHER_BIN`
-in `logic/decision.py`.
+non-plastic (→ the other bin). To flip which physical side is which, swap
+`PLASTIC_BIN`/`OTHER_BIN` in `logic/decision.py`.
 
 ## Directory structure
 
