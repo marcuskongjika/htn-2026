@@ -1,10 +1,12 @@
 """Plastic sorter state machine.
 
-    WAITING -> (weight sensed) -> SENSING -> ACTUATING -> HOLDING -> RESETTING -> WAITING
-       '------------- (below trigger: keep polling) -------------'
+    WAITING -> (weight jumps up) -> SENSING -> ACTUATING -> HOLDING -> RESETTING -> WAITING
+       '------------- (no jump yet: keep polling) --------------'
 
-The load cell gates the whole pipeline: nothing is captured until an item's
-weight crosses WEIGHT_TRIGGER_G. On a trigger, SENSING lets the weight settle,
+The load cell gates the whole pipeline: nothing is captured until the weight
+RISES by more than WEIGHT_DELTA_TRIGGER_G (10 g) above the resting level measured
+while waiting. It is the change that counts, not the absolute reading, so the
+scale's zero never has to be right. On a trigger, SENSING lets the weight settle,
 then reads the metal sensor and classifies the camera frame for plastic, and
 the servo bed tilts (metal detected -> battery side; no metal -> non-battery side),
 HOLDS for a few seconds, returns to level, and waits for the next item.
@@ -84,6 +86,7 @@ class SorterStateMachine:
         self.plastic: bool = False
         self.side: str | None = None
         self.cycles_done: int = 0
+        self._baseline_g: float | None = None   # resting weight; measured on entering WAITING
 
         log.info("State machine initialized (MOCK_HARDWARE=%s)", config.MOCK_HARDWARE)
         # Tare the empty scale on real hardware only; the mock stays un-tared so
@@ -113,18 +116,36 @@ class SorterStateMachine:
 
     # -- state handlers -----------------------------------------------------
     def _handle_waiting(self) -> None:
-        """Poll the load cell; a weight over the trigger means an item was placed."""
+        """Poll the load cell; a RISE of more than WEIGHT_DELTA_TRIGGER_G means an item was placed."""
+        if self._baseline_g is None:
+            # The mock cell reports a constant "item" weight and never changes, so its resting
+            # level is taken as 0 - that keeps the mock demo firing every loop, as before.
+            self._baseline_g = 0.0 if self.load_cell.mock else self.load_cell.read_weight_g(samples=5)
+            log.info("waiting: resting weight %.1fg; will start on a rise of more than %.1fg",
+                     self._baseline_g, config.WEIGHT_DELTA_TRIGGER_G)
+
         weight = self.load_cell.read_weight_g(samples=3)
-        log.debug("waiting: weight=%.2fg (trigger=%.2fg)", weight, config.WEIGHT_TRIGGER_G)
-        if weight >= config.WEIGHT_TRIGGER_G:
-            log.info("weight trigger crossed: %.2fg >= %.2fg", weight, config.WEIGHT_TRIGGER_G)
+        delta = weight - self._baseline_g
+        log.debug("waiting: weight=%.2fg baseline=%.2fg delta=%+.2fg", weight, self._baseline_g, delta)
+
+        if delta > config.WEIGHT_DELTA_TRIGGER_G:
+            log.info("weight jumped %+.1fg (%.1fg -> %.1fg), more than %.1fg: starting",
+                     delta, self._baseline_g, weight, config.WEIGHT_DELTA_TRIGGER_G)
             self._transition(State.SENSING)
-        else:
-            time.sleep(config.IDLE_POLL_INTERVAL_S)
+            return
+        if delta < -config.WEIGHT_DELTA_TRIGGER_G:
+            # Something was taken OFF the bed: that is the new resting level, not a trigger.
+            log.info("weight dropped %+.1fg: new resting weight %.1fg", delta, weight)
+            self._baseline_g = weight
+        elif abs(delta) <= config.WEIGHT_BASELINE_BAND_G:
+            # Slow drift (temperature, creep): let the resting level follow it.
+            self._baseline_g += config.WEIGHT_BASELINE_TRACKING * delta
+        time.sleep(config.IDLE_POLL_INTERVAL_S)
 
     def _handle_sensing(self) -> None:
         """Item confirmed present by weight: read metal + classify, then decide."""
-        self.weight_g = self.load_cell.stable_reading()  # let the item settle before the photo
+        # Let the item settle before the photo. Its weight is what it ADDED to the resting level.
+        self.weight_g = self.load_cell.stable_reading() - (self._baseline_g or 0.0)
         self.metal_present = self.metal_sensor.is_metal_present()
         self.classification = classify_material(capture_frame())
         self.plastic = bool(self.classification.get("plastic", False))
@@ -158,6 +179,7 @@ class SorterStateMachine:
         if not config.MOCK_HARDWARE:
             self.load_cell.tare()
         self._reset_item_state()
+        self._baseline_g = None    # the bed just emptied: measure the resting weight afresh
         self.cycles_done += 1
         self._transition(State.WAITING)
 

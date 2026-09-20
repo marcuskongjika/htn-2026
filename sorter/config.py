@@ -56,7 +56,15 @@ HX711_REFERENCE_UNIT: float = 209.096
 HX711_ZERO_OFFSET: int = -196640   # -194131 first; empty scale then read -12 g, so moved by -12 g = -2509 counts
 
 # Weight thresholds (grams).
-WEIGHT_TRIGGER_G: float = 15.0          # crossing this wakes IDLE -> MEASURING
+WEIGHT_TRIGGER_G: float = 15.0          # (old absolute trigger; main.py now uses the delta below)
+# main.py starts a scan when the weight RISES by more than this above the resting level it
+# measured while waiting. A change, not an absolute value: it does not matter where the
+# scale's zero is, what is bolted to the cell, or how far the zero has drifted.
+WEIGHT_DELTA_TRIGGER_G: float = float(os.getenv("WEIGHT_DELTA_TRIGGER_G", "10.0"))
+# While waiting, the resting level follows slow drift: readings within this band of it are
+# blended in (WEIGHT_BASELINE_TRACKING per poll). Anything bigger is a real change, not drift.
+WEIGHT_BASELINE_BAND_G: float = 3.0
+WEIGHT_BASELINE_TRACKING: float = 0.05
 WEIGHT_STABLE_TOLERANCE_G: float = 1.5  # max spread across samples to call it "stable"
 WEIGHT_STABLE_SAMPLES: int = 8
 WEIGHT_STABLE_MAX_ATTEMPTS: int = 20    # give up waiting for a stable reading after this many sample batches
