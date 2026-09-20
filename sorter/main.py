@@ -1,19 +1,27 @@
-"""Battery-sorter state machine.
+"""Plastic sorter state machine.
 
-    IDLE -> MEASURING -> CLASSIFYING -> DECIDING -> ACTUATING -> RESETTING -> IDLE
+    SENSING -> (detected) -> ACTUATING -> HOLDING -> RESETTING -> SENSING
+       '------ (nothing detected: keep sensing) ------'
 
-Runs as a simple sequential loop (no async/threading — items are processed
-one at a time). Every state transition and every sensor/decision value is
-logged, with timestamps, to both stdout and a rotating log file. The loop
-body is wrapped in try/except so a single bad frame or dropped API call
-logs the error and forces a transition to RESETTING instead of crashing or
-hanging the whole pipeline.
+There is no load cell yet, so nothing waits on weight: the loop senses the
+whole time. Each SENSING round reads the metal sensor and classifies the
+camera frame for plastic. If something sortable is detected (metal, or Gemini
+says plastic) it tilts the bed to min/max, HOLDS for a few seconds, then
+returns to level and resumes sensing. With no metal and no plastic the bed
+stays at level. Sensing never runs while the servos are moving or holding —
+the states are sequential.
 
-Run with MOCK_HARDWARE=1 (the default, see config.py / .env.example) to
-exercise the full loop on a laptop with no hardware attached.
+Every state transition and sensor/decision value is logged, with timestamps,
+to stdout and a rotating log file. Each step is wrapped in try/except so a bad
+frame or dropped API call forces a return to level instead of hanging.
+
+Run with MOCK_HARDWARE=1 (the default) to exercise the loop on a laptop with
+no hardware attached; `--cycles N` stops after N tilts (handy for a bounded
+mock demo).
 """
 from __future__ import annotations
 
+import argparse
 import enum
 import logging
 import logging.handlers
@@ -21,8 +29,7 @@ import time
 
 import config
 from actuators.servo_pair import ServoPair
-from logic.decision import sort_side
-from sensors.load_cell import LoadCell
+from logic.decision import decide_side
 from sensors.metal_sensor import MetalSensor
 from vision.camera import capture_frame
 from vision.classifier import classify_material
@@ -31,11 +38,9 @@ log = logging.getLogger("sorter")
 
 
 class State(enum.Enum):
-    IDLE = "IDLE"
-    MEASURING = "MEASURING"
-    CLASSIFYING = "CLASSIFYING"
-    DECIDING = "DECIDING"
+    SENSING = "SENSING"
     ACTUATING = "ACTUATING"
+    HOLDING = "HOLDING"
     RESETTING = "RESETTING"
 
 
@@ -65,17 +70,16 @@ def _configure_logging() -> None:
 
 class SorterStateMachine:
     def __init__(self) -> None:
-        self.state = State.IDLE
-        self.load_cell = LoadCell()
+        self.state = State.SENSING
         self.metal_sensor = MetalSensor()
         self.pair = ServoPair((config.SERVO_LEADER_ID, config.SERVO_FOLLOWER_ID))
 
         # Populated across a single pass through the pipeline.
-        self.weight_g: float = 0.0
         self.metal_present: bool = False
         self.classification: dict = {}
         self.plastic: bool = False
         self.side: str | None = None
+        self.cycles_done: int = 0
 
         log.info("State machine initialized (MOCK_HARDWARE=%s)", config.MOCK_HARDWARE)
         self.pair.go_level()
@@ -85,7 +89,6 @@ class SorterStateMachine:
         self.state = new_state
 
     def _reset_item_state(self) -> None:
-        self.weight_g = 0.0
         self.metal_present = False
         self.classification = {}
         self.plastic = False
@@ -99,51 +102,40 @@ class SorterStateMachine:
             self.metal_sensor.close()
 
     # -- state handlers -----------------------------------------------------
-    def _handle_idle(self) -> None:
-        weight = self.load_cell.read_weight_g()
-        log.debug("idle poll: weight=%.2fg (trigger=%.2fg)", weight, config.WEIGHT_TRIGGER_G)
-        if weight >= config.WEIGHT_TRIGGER_G:
-            log.info("weight trigger crossed: %.2fg >= %.2fg", weight, config.WEIGHT_TRIGGER_G)
-            self._transition(State.MEASURING)
-        else:
-            time.sleep(config.IDLE_POLL_INTERVAL_S)
-
-    def _handle_measuring(self) -> None:
-        self.weight_g = self.load_cell.stable_reading()
+    def _handle_sensing(self) -> None:
+        """Read both sensors once. Tilt if something is detected, else keep sensing."""
         self.metal_present = self.metal_sensor.is_metal_present()
-        log.info(
-            "measured: weight=%.2fg metal_present=%s", self.weight_g, self.metal_present
-        )
-        self._transition(State.CLASSIFYING)
-
-    def _handle_classifying(self) -> None:
-        frame = capture_frame()
-        self.classification = classify_material(frame)
-        log.info("classified: %s", self.classification)
-        self._transition(State.DECIDING)
-
-    def _handle_deciding(self) -> None:
+        self.classification = classify_material(capture_frame())
         self.plastic = bool(self.classification.get("plastic", False))
-        self.side = sort_side(self.plastic, self.metal_present)
+        self.side = decide_side(self.plastic, self.metal_present)
         log.info(
-            "decision: side=%s (plastic=%s metal_present=%s classification=%s)",
-            self.side,
-            self.plastic,
+            "sensed: metal_present=%s plastic=%s -> side=%s (classification=%s)",
             self.metal_present,
+            self.plastic,
+            self.side,
             self.classification,
         )
+        if self.side is None:
+            # Nothing sortable on the bed: stay level, sample again shortly.
+            time.sleep(config.SENSE_INTERVAL_S)
+            return
         self._transition(State.ACTUATING)
 
     def _handle_actuating(self) -> None:
         arrived = self.pair.go_to(self.side)
         log.info("actuated: side=%s arrived=%s", self.side, arrived)
+        self._transition(State.HOLDING)
+
+    def _handle_holding(self) -> None:
+        log.info("holding at %s for %.1fs", self.side, config.TILT_HOLD_S)
+        time.sleep(config.TILT_HOLD_S)
         self._transition(State.RESETTING)
 
     def _handle_resetting(self) -> None:
-        time.sleep(config.RESETTING_PAUSE_S)
         self.pair.go_level()
         self._reset_item_state()
-        self._transition(State.IDLE)
+        self.cycles_done += 1
+        self._transition(State.SENSING)
 
     _HANDLERS = None  # populated after class body, see below
 
@@ -151,60 +143,42 @@ class SorterStateMachine:
         handler = self._HANDLERS[self.state]
         handler(self)
 
-    def run_forever(self) -> None:
-        log.info("Entering main loop")
-        while True:
+    def run(self, max_cycles: int | None = None) -> None:
+        """Sense/tilt forever, or until `max_cycles` tilts have completed.
+
+        A single bad frame or dropped API call is caught and forces a return to
+        level (RESETTING) rather than crashing or hanging the loop.
+        """
+        log.info("Entering sensing loop (max_cycles=%s)", max_cycles)
+        while max_cycles is None or self.cycles_done < max_cycles:
             try:
                 self.step()
             except Exception:
                 log.exception(
-                    "unhandled error in state %s; forcing transition to RESETTING",
+                    "unhandled error in state %s; returning to level",
                     self.state.value,
                 )
                 self._transition(State.RESETTING)
 
-    def run_one_cycle(self) -> None:
-        """Run one full pass: wait for the IDLE weight trigger, then proceed
-        through MEASURING -> ... -> RESETTING back to IDLE.
-
-        Used for smoke-testing the full pipeline in mock mode without an
-        infinite loop (see README's mock bring-up instructions). The mock
-        load cell's baseline weight sits above WEIGHT_TRIGGER_G, so IDLE
-        triggers on its first poll rather than being skipped.
-        """
-        log.info("Running a single full cycle (mock smoke test)")
-        while self.state != State.MEASURING:
-            self.step()
-        while self.state != State.RESETTING:
-            self.step()
-        final_side = self.side  # snapshot before RESETTING clears item state
-        self.step()  # RESETTING -> IDLE
-        log.info("Cycle complete: side=%s", final_side)
-
 
 SorterStateMachine._HANDLERS = {
-    State.IDLE: SorterStateMachine._handle_idle,
-    State.MEASURING: SorterStateMachine._handle_measuring,
-    State.CLASSIFYING: SorterStateMachine._handle_classifying,
-    State.DECIDING: SorterStateMachine._handle_deciding,
+    State.SENSING: SorterStateMachine._handle_sensing,
     State.ACTUATING: SorterStateMachine._handle_actuating,
+    State.HOLDING: SorterStateMachine._handle_holding,
     State.RESETTING: SorterStateMachine._handle_resetting,
 }
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Continuous plastic/metal sorter loop.")
+    parser.add_argument("--cycles", type=int, default=None,
+                        help="stop after this many completed tilt cycles (default: run until Ctrl+C)")
+    args = parser.parse_args()
+
     _configure_logging()
     machine = SorterStateMachine()
-
     try:
-        if config.MOCK_HARDWARE:
-            # In mock mode there's no real weight event to wait on forever, so
-            # run one deterministic end-to-end cycle and exit — this is what the
-            # README's "run with MOCK_HARDWARE=1" acceptance check exercises.
-            machine.run_one_cycle()
-            return
-
-        machine.run_forever()
+        machine.run(max_cycles=args.cycles)
     finally:
         machine.close()
 

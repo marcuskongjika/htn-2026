@@ -36,3 +36,17 @@ def sort_side(plastic: bool, metal_present: bool) -> str:
     if plastic and not metal_present:
         return PLASTIC_BIN
     return OTHER_BIN
+
+
+def decide_side(plastic: bool, metal_present: bool) -> str | None:
+    """Tilt setpoint for a *detected* item, or None when nothing sortable is present.
+
+    An item counts as detected if the metal sensor fired OR Gemini called it
+    plastic. With no metal and no plastic there is nothing on the bed worth
+    sorting, so the caller should stay at level and keep sensing (return None)
+    rather than tilt an empty bed. When something is detected, the direction is
+    the usual `sort_side()` rule.
+    """
+    if not plastic and not metal_present:
+        return None
+    return sort_side(plastic, metal_present)

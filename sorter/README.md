@@ -9,11 +9,18 @@ the item into the "plastic" bin or the "other" bin. Clean plastic (Gemini says
 plastic AND no metal detected) goes one way; everything else goes the other.
 
 
-The pipeline is an explicit state machine (`main.py`):
+The pipeline is an explicit state machine (`main.py`) that senses continuously
+— there is no load cell yet, so nothing waits on weight:
 
 ```
-IDLE -> MEASURING -> CLASSIFYING -> DECIDING -> ACTUATING -> RESETTING -> IDLE
+SENSING -> (item detected) -> ACTUATING -> HOLDING -> RESETTING -> SENSING
+   '------------ (nothing detected: keep sensing) ------------'
 ```
+
+Each SENSING round reads the metal sensor and classifies the camera frame. If
+metal is detected, or Gemini says plastic, it tilts the bed (metal -> max;
+plastic with no metal -> min), holds for `TILT_HOLD_S` (default 5 s), returns to
+level, and resumes. With no metal and no plastic the bed stays at level.
 
 Every hardware-touching module (`sensors/`, `vision/camera.py`,
 `actuators/`) has a **mock mode** that returns synthetic data instead of
@@ -53,16 +60,17 @@ MOCK_HARDWARE=1   # 1 on a laptop with no hardware, 0 on the Pi with hardware at
 
 With `MOCK_HARDWARE=1` (the default), the whole pipeline — including a
 canned Gemini-shaped response, no network call — runs end to end on a
-laptop:
+laptop. It senses continuously, so it runs until Ctrl+C:
 
 ```bash
-python main.py
+python main.py                                        # runs until Ctrl+C
+TILT_HOLD_S=1 SENSE_INTERVAL_S=0 python main.py --cycles 2   # bounded demo: 2 tilts, short hold
 ```
 
-This runs one full cycle (the mock load cell's baseline weight sits above
-`WEIGHT_TRIGGER_G`, so `IDLE` triggers immediately) and logs every state
-transition and sensor/decision value to stdout and to `logs/sorter.log`
-(rotating, see `config.LOG_MAX_BYTES` / `LOG_BACKUP_COUNT`).
+`--cycles N` stops after N completed tilts; `TILT_HOLD_S` / `SENSE_INTERVAL_S`
+tune the hold and the idle sampling pause. Every state transition and
+sensor/decision value is logged to stdout and to `logs/sorter.log` (rotating,
+see `config.LOG_MAX_BYTES` / `LOG_BACKUP_COUNT`).
 
 To test just the material classifier against the real Gemini API while
 everything else stays mocked, set `MOCK_HARDWARE=0` but note that will also
@@ -233,16 +241,17 @@ bed tilts:
 - **`plastic` AND no metal → the plastic bin** (`ServoPair.go_min()`). Only
   clean plastic goes here: Gemini must call it plastic *and* the inductive
   sensor must read no metal.
-- **every other case → the other bin** (`go_max()`) — any metal hit, or anything
-  Gemini does not call plastic. Metal is a fast, high-precision veto.
+- **metal, or anything not called plastic → the other bin** (`go_max()`). Metal
+  is a fast, high-precision veto.
+- **no metal AND not plastic → nothing to sort**: `decide_side()` returns `None`,
+  so the bed stays at level and keeps sensing (it never tilts an empty bed).
 
-The bed rests at `go_level()` between items. Weight is captured and used to
-trigger the `IDLE -> MEASURING` transition but does not affect direction.
-Gemini still reports `likely_contains_battery`, but it is logged only and no
-longer influences sorting. The classifier fails toward `plastic=False` on
-errors/timeouts, so an unreachable model sends the item to the other bin.
-To flip which physical side is which, swap `PLASTIC_BIN`/`OTHER_BIN` in
-`logic/decision.py`.
+The bed rests at `go_level()` between items. There is no load cell yet, so
+sensing is not weight-gated. Gemini still reports `likely_contains_battery`, but
+it is logged only and no longer influences sorting. The classifier fails toward
+`plastic=False` on errors/timeouts, so an unreachable model treats the item as
+non-plastic. To flip which physical side is which, swap `PLASTIC_BIN`/`OTHER_BIN`
+in `logic/decision.py`.
 
 ## Directory structure
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from logic.decision import OTHER_BIN, PLASTIC_BIN, sort_side
+from logic.decision import OTHER_BIN, PLASTIC_BIN, decide_side, sort_side
 
 
 def test_plastic_and_no_metal_goes_to_plastic_bin():
@@ -40,12 +40,29 @@ def test_plastic_bin_only_for_clean_plastic():
     assert to_plastic == [(True, False)]
 
 
+def test_decide_side_none_when_nothing_detected():
+    # No metal and not plastic -> nothing to sort, stay level.
+    assert decide_side(plastic=False, metal_present=False) is None
+
+
+def test_decide_side_plastic_no_metal_goes_to_plastic_bin():
+    assert decide_side(plastic=True, metal_present=False) == PLASTIC_BIN
+
+
+def test_decide_side_metal_goes_to_other_bin():
+    assert decide_side(plastic=True, metal_present=True) == OTHER_BIN
+    assert decide_side(plastic=False, metal_present=True) == OTHER_BIN
+
+
 _TESTS = [
     test_plastic_and_no_metal_goes_to_plastic_bin,
     test_plastic_but_metal_goes_to_other_bin,
     test_not_plastic_no_metal_goes_to_other_bin,
     test_not_plastic_and_metal_goes_to_other_bin,
     test_plastic_bin_only_for_clean_plastic,
+    test_decide_side_none_when_nothing_detected,
+    test_decide_side_plastic_no_metal_goes_to_plastic_bin,
+    test_decide_side_metal_goes_to_other_bin,
 ]
 
 
