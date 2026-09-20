@@ -41,11 +41,19 @@ PLASTIC_CONFIDENCE_THRESHOLD: float = 0.5
 HX711_DOUT_PIN: int = 5   # physical pin 29
 HX711_SCK_PIN: int = 6    # physical pin 31
 
-# Placeholder calibration values — MUST be tuned on real hardware by running
-# `python -m sensors.load_cell` with known reference weights (see README
-# bring-up order).
-HX711_REFERENCE_UNIT: float = 1.0  # raw-count-to-grams divisor, placeholder
-HX711_ZERO_OFFSET: int = 0         # raw reading with an empty scale, placeholder
+HX711_GAIN: int = 128     # channel A; 64 also valid. 128 is right for a bar load cell
+# Tare + scale measured on the rig by `python tests/load_cell_read.py` (t = tare,
+# c <grams> = calibrate with a known weight, save). When this file exists it wins over
+# the two placeholder numbers below.
+LOAD_CELL_CALIBRATION_FILE: Path = Path(os.getenv("LOAD_CELL_CALIBRATION_FILE", Path(__file__).resolve().parent / "load_cell_calibration.json"))
+
+# Fallback calibration, used only if the calibration file above is missing. Measured on the
+# rig 2026-09-20 (10 kg bar cell, gain 128): raw -194131 empty, -141857 with 250 g on
+#   -> (-141857 - -194131) / 250 = 209.096 counts per gram.
+# grams = (raw - HX711_ZERO_OFFSET) / HX711_REFERENCE_UNIT. The zero drifts with temperature
+# and with anything bolted to the cell, so LoadCell.tare() at start-up; the counts/g does not.
+HX711_REFERENCE_UNIT: float = 209.096
+HX711_ZERO_OFFSET: int = -194131
 
 # Weight thresholds (grams).
 WEIGHT_TRIGGER_G: float = 15.0          # crossing this wakes IDLE -> MEASURING
