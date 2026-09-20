@@ -115,16 +115,32 @@ class SorterStateMachine:
             self.load_cell.close()
 
     # -- state handlers -----------------------------------------------------
+    def _measure_resting_weight(self) -> float:
+        """The bed's resting weight, taken as soon as it has actually settled: the mean of the first
+        WEIGHT_REST_SAMPLES consecutive readings that agree to within WEIGHT_BASELINE_BAND_G.
+        Usually ~0.3 s; a bed still bouncing from the dump just takes a few readings longer."""
+        if self.load_cell.mock:
+            # The mock cell reports a constant "item" weight and never changes, so its resting
+            # level is taken as 0 - that keeps the mock demo firing every loop, as before.
+            return 0.0
+        recent: list[float] = []
+        for _ in range(config.WEIGHT_REST_MAX_SAMPLES):
+            recent.append(self.load_cell.read_weight_g())
+            recent = recent[-config.WEIGHT_REST_SAMPLES:]
+            if len(recent) == config.WEIGHT_REST_SAMPLES and max(recent) - min(recent) <= config.WEIGHT_BASELINE_BAND_G:
+                break
+        else:
+            log.warning("scale did not settle within %d readings; using the last %d", config.WEIGHT_REST_MAX_SAMPLES, len(recent))
+        return sum(recent) / len(recent)
+
     def _handle_waiting(self) -> None:
         """Poll the load cell; a RISE of more than WEIGHT_DELTA_TRIGGER_G means an item was placed."""
         if self._baseline_g is None:
-            # The mock cell reports a constant "item" weight and never changes, so its resting
-            # level is taken as 0 - that keeps the mock demo firing every loop, as before.
-            self._baseline_g = 0.0 if self.load_cell.mock else self.load_cell.read_weight_g(samples=5)
+            self._baseline_g = self._measure_resting_weight()
             log.info("waiting: resting weight %.1fg; will start on a rise of more than %.1fg",
                      self._baseline_g, config.WEIGHT_DELTA_TRIGGER_G)
 
-        weight = self.load_cell.read_weight_g(samples=3)
+        weight = self.load_cell.read_weight_g(samples=2)
         delta = weight - self._baseline_g
         log.debug("waiting: weight=%.2fg baseline=%.2fg delta=%+.2fg", weight, self._baseline_g, delta)
 
@@ -174,10 +190,9 @@ class SorterStateMachine:
     def _handle_resetting(self) -> None:
         self.pair.go_level()
         time.sleep(config.RESETTING_PAUSE_S)
-        # The bed is empty after the dump: re-zero the drift on real hardware
-        # (skip in mock so the baseline weight keeps triggering).
-        if not config.MOCK_HARDWARE:
-            self.load_cell.tare()
+        # No re-tare here: the trigger is a RISE above the resting weight, and that resting
+        # weight is measured afresh the moment we are back in WAITING, so the scale's zero
+        # never matters. (A 15-sample tare cost ~1.3 s every single cycle.)
         self._reset_item_state()
         self._baseline_g = None    # the bed just emptied: measure the resting weight afresh
         self.cycles_done += 1

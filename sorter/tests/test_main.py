@@ -70,6 +70,11 @@ def machine_factory(monkeypatch):
     return make
 
 
+def rest(value):
+    """The three agreeing readings that establish the resting weight on entering WAITING."""
+    return [value] * config.WEIGHT_REST_SAMPLES
+
+
 def wait_steps(machine, n):
     for _ in range(n):
         assert machine.state is State.WAITING
@@ -80,7 +85,7 @@ T = config.WEIGHT_DELTA_TRIGGER_G     # 10 g
 
 
 def test_a_rise_of_more_than_the_threshold_starts_the_scan(machine_factory):
-    machine, scale, moves = machine_factory([500.0, 500.0, 500.4, 530.0])   # resting 500, then +30
+    machine, scale, moves = machine_factory(rest(500.0) + [500.0, 500.4, 530.0])   # resting 500, then +30
     wait_steps(machine, 2)
     assert machine.state is State.WAITING
     machine.step()
@@ -91,7 +96,7 @@ def test_a_rise_of_more_than_the_threshold_starts_the_scan(machine_factory):
 
 def test_the_absolute_reading_does_not_matter(machine_factory):
     # A scale whose zero is wildly off: resting at -1490 g. Just over the threshold still triggers, just under does not.
-    machine, _, _ = machine_factory([-1490.0, -1490.0 + T - 1, -1490.0 + T + 1])
+    machine, _, _ = machine_factory(rest(-1490.0) + [-1490.0 + T - 1, -1490.0 + T + 1])
     machine.step()
     assert machine.state is State.WAITING                                    # threshold - 1 g: not enough
     machine.step()
@@ -99,7 +104,7 @@ def test_the_absolute_reading_does_not_matter(machine_factory):
 
 
 def test_exactly_the_threshold_is_not_more_than_it(machine_factory):
-    machine, _, _ = machine_factory([100.0, 100.0 + T, 100.0 + T, 100.0 + T + 0.1])
+    machine, _, _ = machine_factory(rest(100.0) + [100.0 + T, 100.0 + T, 100.0 + T + 0.1])
     wait_steps(machine, 2)
     assert machine.state is State.WAITING
     machine.step()
@@ -125,7 +130,7 @@ def test_an_item_lowered_slowly_still_triggers(machine_factory):
 
 
 def test_taking_something_off_resets_the_resting_level(machine_factory):
-    machine, _, _ = machine_factory([500.0, 500.0, 200.0, 200.0, 200.0 + T + 3])
+    machine, _, _ = machine_factory(rest(500.0) + [500.0, 200.0, 200.0, 200.0 + T + 3])
     wait_steps(machine, 3)                                                   # 500 -> 200: a drop, not a trigger
     assert machine._baseline_g == pytest.approx(200.0)
     machine.step()
@@ -133,11 +138,11 @@ def test_taking_something_off_resets_the_resting_level(machine_factory):
 
 
 def test_full_cycle_then_a_fresh_resting_level(machine_factory):
-    machine, scale, moves = machine_factory([0.0, 0.0, 40.0, 40.0, 3.0, 3.0, 3.0, 45.0])
+    machine, scale, moves = machine_factory(rest(0.0) + [0.0, 40.0, 40.0] + rest(3.0) + [3.0, 45.0])
     machine.run(max_cycles=1)
     assert moves == ["level", "non_battery", "level"]
     assert machine.state is State.WAITING and machine._baseline_g is None    # will be re-measured
-    assert scale.tares == 2                                                  # start-up + after the dump
+    assert scale.tares == 1                                                  # start-up only: no re-tare per cycle any more
     machine.step()
     assert machine._baseline_g == pytest.approx(3.0)                         # residue left on the bed is the new normal
 
@@ -151,3 +156,17 @@ def test_mock_mode_still_fires_every_loop(monkeypatch):
     machine.run(max_cycles=2)
     assert machine.cycles_done == 2
     machine.close()
+
+
+def test_resting_weight_waits_for_a_bouncing_bed_to_settle(machine_factory):
+    # Right after a dump the bed is still bouncing: 40, -25, 18, -6 ... then it settles near 2 g.
+    machine, scale, _ = machine_factory([40.0, -25.0, 18.0, -6.0, 2.2, 1.9, 2.1, 2.0, 2.0])
+    machine.step()
+    assert machine._baseline_g == pytest.approx(2.07, abs=0.1)               # not 40, not the average of the bounce
+    assert machine.state is State.WAITING                                     # and the bounce itself did not trigger a scan
+
+
+def test_a_settled_bed_is_accepted_after_three_readings(machine_factory):
+    machine, scale, _ = machine_factory([5.0, 5.1, 4.9, 5.0, 5.0])
+    machine.step()
+    assert scale.reads == 3 + 1                                               # 3 to establish rest, then the first poll

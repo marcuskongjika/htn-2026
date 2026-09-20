@@ -64,6 +64,11 @@ WEIGHT_DELTA_TRIGGER_G: float = float(os.getenv("WEIGHT_DELTA_TRIGGER_G", "10.0"
 # While waiting, the resting level follows slow drift: readings within this band of it are
 # blended in (WEIGHT_BASELINE_TRACKING per poll). Anything bigger is a real change, not drift.
 WEIGHT_BASELINE_BAND_G: float = 3.0
+# After a dump the bed is accepted as "at rest" as soon as this many consecutive readings agree
+# to within WEIGHT_BASELINE_BAND_G - instead of a fixed pause plus a full re-tare. Gives up
+# waiting (and uses what it has) after WEIGHT_REST_MAX_SAMPLES readings.
+WEIGHT_REST_SAMPLES: int = 3
+WEIGHT_REST_MAX_SAMPLES: int = 15
 WEIGHT_BASELINE_TRACKING: float = 0.05
 WEIGHT_STABLE_TOLERANCE_G: float = 1.5  # max spread across samples to call it "stable"
 WEIGHT_STABLE_SAMPLES: int = 8
@@ -159,8 +164,8 @@ LOG_MAX_BYTES: int = 1_000_000
 LOG_BACKUP_COUNT: int = 3
 
 # --- State machine timing -----------------------------------------------
-RESETTING_PAUSE_S: float = 1.5  # settle time before returning to IDLE
-IDLE_POLL_INTERVAL_S: float = 0.1
+RESETTING_PAUSE_S: float = float(os.getenv("RESETTING_PAUSE_S", "0.2"))  # after reaching level, before reading the scale again (was 1.5)
+IDLE_POLL_INTERVAL_S: float = 0.0   # each scale read already blocks ~85 ms per sample, so no extra sleep is needed
 
 # --- Sorting loop -------------------------------------------------------
 # Env-overridable so the mock demo can use a short hold.
