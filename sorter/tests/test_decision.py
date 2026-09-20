@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from logic.decision import FLAGGED, SAFE, fuse
 
-NOT_BATTERY = {"material": "banana peel", "likely_contains_battery": False, "confidence": 0.9}
-IS_BATTERY = {"material": "plastic toy", "likely_contains_battery": True, "confidence": 0.9}
+NOT_BATTERY = {"plastic": False, "plastic_confidence": 0.1, "likely_contains_battery": False, "confidence": 0.9}
+IS_BATTERY = {"plastic": True, "plastic_confidence": 0.8, "likely_contains_battery": True, "confidence": 0.9}
 
 
 def test_safe_when_no_metal_and_no_battery_material():

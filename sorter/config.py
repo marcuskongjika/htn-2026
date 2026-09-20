@@ -33,6 +33,8 @@ MOCK_HARDWARE: bool = _env_flag("MOCK_HARDWARE", default=True)
 GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_TIMEOUT_S: float = 30.0  # gemini-3.6-flash "thinks", so it needs headroom past 5s
+# The item is labelled plastic if the model's plastic_confidence exceeds this.
+PLASTIC_CONFIDENCE_THRESHOLD: float = 0.5
 
 # --- HX711 / load cell wiring ----------------------------------------------
 # BCM numbering. VCC -> Pi 3.3V (pin 1), GND -> pin 6.
