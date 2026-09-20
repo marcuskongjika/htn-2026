@@ -48,26 +48,46 @@ def test_mock_mode_returns_canned_result_without_network():
 
 # --- response parsing ------------------------------------------------------
 def test_parse_plain_json():
-    r = _parse_response_text('{"material": "cardboard", "likely_contains_battery": false, "confidence": 0.8}')
-    assert r.material == "cardboard"
+    r = _parse_response_text('{"plastic_confidence": 0.2, "likely_contains_battery": false, "confidence": 0.8}')
+    assert r.plastic is False  # 0.2 <= 0.5 threshold
+    assert r.plastic_confidence == 0.2
     assert r.likely_contains_battery is False
     assert r.confidence == 0.8
 
 
 def test_parse_strips_markdown_fences():
-    fenced = '```json\n{"material": "remote", "likely_contains_battery": true, "confidence": 0.95}\n```'
+    fenced = '```json\n{"plastic_confidence": 0.9, "likely_contains_battery": true, "confidence": 0.95}\n```'
     r = _parse_response_text(fenced)
-    assert r.material == "remote"
+    assert r.plastic is True  # 0.9 > 0.5 threshold
     assert r.likely_contains_battery is True
+
+
+@pytest.mark.parametrize(
+    "confidence,expected_plastic",
+    [
+        (0.6, True),
+        (0.51, True),
+        (0.5, False),   # strictly greater than the threshold, so 0.5 is NOT plastic
+        (0.4, False),
+        (0.0, False),
+        (1.0, True),
+    ],
+)
+def test_plastic_threshold_at_half(confidence, expected_plastic):
+    r = _validate({"plastic_confidence": confidence, "likely_contains_battery": False, "confidence": 0.9})
+    assert r.plastic is expected_plastic
+    assert r.plastic_confidence == confidence
 
 
 @pytest.mark.parametrize(
     "bad",
     [
-        {"material": "", "likely_contains_battery": True, "confidence": 0.5},
-        {"material": "toy", "likely_contains_battery": "yes", "confidence": 0.5},
-        {"material": "toy", "likely_contains_battery": True, "confidence": 1.5},
-        {"material": "toy", "likely_contains_battery": True, "confidence": "high"},
+        {"plastic_confidence": 1.5, "likely_contains_battery": True, "confidence": 0.5},
+        {"plastic_confidence": "high", "likely_contains_battery": True, "confidence": 0.5},
+        {"plastic_confidence": True, "likely_contains_battery": True, "confidence": 0.5},
+        {"plastic_confidence": 0.5, "likely_contains_battery": "yes", "confidence": 0.5},
+        {"plastic_confidence": 0.5, "likely_contains_battery": True, "confidence": 1.5},
+        {"plastic_confidence": 0.5, "likely_contains_battery": True, "confidence": "high"},
     ],
 )
 def test_validate_rejects_malformed(bad):
@@ -79,7 +99,7 @@ def test_validate_rejects_malformed(bad):
 @pytest.fixture
 def fake_gemini(monkeypatch):
     """Inject a stub `google.genai` so `_call_gemini` runs for real, offline."""
-    captured: dict = {"response_text": '{"material": "plastic toy", "likely_contains_battery": true, "confidence": 0.9}'}
+    captured: dict = {"response_text": '{"plastic_confidence": 0.9, "likely_contains_battery": true, "confidence": 0.9}'}
 
     class _FakePart:
         @staticmethod
@@ -126,7 +146,12 @@ def fake_gemini(monkeypatch):
 
 def test_call_gemini_sends_jpeg_bytes_and_prompt(fake_gemini):
     result = classify_material(FAKE_JPEG, mock=False)
-    assert result == {"material": "plastic toy", "likely_contains_battery": True, "confidence": 0.9}
+    assert result == {
+        "plastic": True,  # plastic_confidence 0.9 > 0.5
+        "plastic_confidence": 0.9,
+        "likely_contains_battery": True,
+        "confidence": 0.9,
+    }
 
     # The image Part must carry our exact JPEG bytes with the image/jpeg mime type.
     part, prompt = fake_gemini["contents"]

@@ -2,8 +2,9 @@
 
 Raspberry Pi 5 pipeline that flags waste items likely to contain a hidden
 battery. A load cell (HX711) and an inductive metal sensor cross-check a
-Gemini photo classification of the item's material, then drive two STS3215
-smart servos to tilt the item into a "safe" or "flagged" bin.
+Gemini photo classification of the item (whether it is plastic, and whether it
+likely contains a hidden battery), then drive two STS3215 smart servos to tilt
+the item into a "safe" or "flagged" bin.
 
 The pipeline is an explicit state machine (`main.py`):
 
@@ -111,7 +112,9 @@ python -m tests.webcam_smoke --real-gemini  # real camera + REAL Gemini (needs G
 > ```
 
 **Seeing how Gemini categorizes an item** — `--real-gemini` above prints the raw
-JSON verdict (`material`, `likely_contains_battery`, `confidence`). You can also
+JSON verdict (`plastic`, `plastic_confidence`, `likely_contains_battery`,
+`confidence`). `plastic` is `true` when `plastic_confidence` exceeds 0.5
+(`config.PLASTIC_CONFIDENCE_THRESHOLD`). You can also
 run the classifier standalone against the real API (`MOCK_HARDWARE=0`, key set):
 
 ```bash
@@ -176,7 +179,7 @@ sorter/
 │   └── metal_sensor.py           # inductive sensor wrapper
 ├── vision/
 │   ├── camera.py                 # OpenCV frame capture
-│   └── classifier.py             # Gemini material classification
+│   └── classifier.py             # Gemini plastic + battery classification
 ├── actuators/
 │   └── servo_controller.py       # STS3215 servo wrapper
 ├── logic/

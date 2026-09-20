@@ -1,8 +1,12 @@
 """Gemini-based material classifier.
 
 Wraps the current `google-genai` SDK (NOT the deprecated
-`google-generativeai`) to classify a captured JPEG frame's material and
-whether it likely contains a hidden battery.
+`google-generativeai`) to classify a captured JPEG frame: whether the item
+is plastic and whether it likely contains a hidden battery.
+
+The model reports a numeric `plastic_confidence`; this module derives the
+`plastic` boolean by thresholding it at `config.PLASTIC_CONFIDENCE_THRESHOLD`
+(0.5), so the cutoff is enforced in code rather than trusted to the model.
 
 The model is instructed to return strict JSON only. The response is parsed
 and validated defensively — a malformed/non-JSON response, a network error,
@@ -28,27 +32,31 @@ or electronic device).
 
 Look at the photo and respond with STRICT JSON only, no markdown fences, no \
 prose, matching exactly this schema:
-{"material": string, "likely_contains_battery": bool, "confidence": number}
+{"plastic_confidence": number, "likely_contains_battery": bool, "confidence": number}
 
-- "material": a short description of the primary material/object (e.g. \
-"plastic toy", "cardboard", "banana peel", "electronic remote").
+- "plastic_confidence": your confidence, from 0.0 to 1.0, that the item's \
+primary material is plastic (e.g. a plastic bottle, container, toy, or \
+wrapper). Use values below 0.5 for clearly non-plastic items (metal, paper, \
+cardboard, glass, food/organics).
 - "likely_contains_battery": true if the item plausibly contains a battery, \
 even if not visible (electronics, toys with buttons/lights, remotes, small \
 sealed devices). When uncertain, prefer true.
-- "confidence": your confidence in this judgment, from 0.0 to 1.0.
+- "confidence": your confidence in the battery judgment, from 0.0 to 1.0.
 
 Respond with the JSON object only."""
 
 # Fail toward caution, not toward "safe", whenever the model can't be reached
-# or its response can't be trusted.
-_FALLBACK = {"material": "unknown", "likely_contains_battery": True, "confidence": 0.0}
+# or its response can't be trusted. The battery signal stays True (flag it);
+# plastic doesn't affect sorting, so its cautious default is simply False.
+_FALLBACK = {"plastic": False, "plastic_confidence": 0.0, "likely_contains_battery": True, "confidence": 0.0}
 
-_MOCK_RESULT = {"material": "plastic toy", "likely_contains_battery": True, "confidence": 0.87}
+_MOCK_RESULT = {"plastic": True, "plastic_confidence": 0.87, "likely_contains_battery": True, "confidence": 0.87}
 
 
 @dataclass
 class ClassificationResult:
-    material: str
+    plastic: bool
+    plastic_confidence: float
     likely_contains_battery: bool
     confidence: float
 
@@ -57,18 +65,26 @@ class ClassificationResult:
 
 
 def _validate(raw: dict) -> ClassificationResult:
-    material = raw.get("material")
+    plastic_confidence = raw.get("plastic_confidence")
     likely = raw.get("likely_contains_battery")
     confidence = raw.get("confidence")
 
-    if not isinstance(material, str) or not material.strip():
-        raise ValueError(f"invalid 'material': {material!r}")
+    if not isinstance(plastic_confidence, (int, float)) or isinstance(plastic_confidence, bool) \
+            or not (0.0 <= float(plastic_confidence) <= 1.0):
+        raise ValueError(f"invalid 'plastic_confidence': {plastic_confidence!r}")
     if not isinstance(likely, bool):
         raise ValueError(f"invalid 'likely_contains_battery': {likely!r}")
-    if not isinstance(confidence, (int, float)) or not (0.0 <= float(confidence) <= 1.0):
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) \
+            or not (0.0 <= float(confidence) <= 1.0):
         raise ValueError(f"invalid 'confidence': {confidence!r}")
 
-    return ClassificationResult(material=material, likely_contains_battery=likely, confidence=float(confidence))
+    plastic_confidence = float(plastic_confidence)
+    return ClassificationResult(
+        plastic=plastic_confidence > config.PLASTIC_CONFIDENCE_THRESHOLD,
+        plastic_confidence=plastic_confidence,
+        likely_contains_battery=likely,
+        confidence=float(confidence),
+    )
 
 
 def _parse_response_text(text: str) -> ClassificationResult:
@@ -106,9 +122,12 @@ def _call_gemini(jpeg_bytes: bytes) -> ClassificationResult:
 
 
 def classify_material(jpeg_bytes: bytes, mock: bool | None = None) -> dict:
-    """Classify the material in `jpeg_bytes` and assess battery risk.
+    """Classify whether the item in `jpeg_bytes` is plastic and assess battery risk.
 
-    Returns a dict: {"material": str, "likely_contains_battery": bool, "confidence": float}.
+    Returns a dict:
+        {"plastic": bool, "plastic_confidence": float,
+         "likely_contains_battery": bool, "confidence": float}
+    where `plastic` is `plastic_confidence > config.PLASTIC_CONFIDENCE_THRESHOLD`.
     Never raises — on any error or timeout, returns the cautious fallback.
     """
     use_mock = config.MOCK_HARDWARE if mock is None else mock
