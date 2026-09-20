@@ -129,9 +129,12 @@ class ServoPair:
         return self.move_to(tuple(pos + self._sign[sid] * ticks for sid, pos in zip(self.ids, now)), **kwargs)
 
     # --- wheel mode --------------------------------------------------------------
-    def run_for(self, seconds: float, speed: int = 300, acc: int = 20) -> None:
+    def run_for(self, seconds: float, speed: int = 300, acc: int = 20, on_poll=None) -> None:
         """Spin both for `seconds` at `speed` steps/s (negative = the other way), then stop.
-        See the module docstring: only for mechanisms that can turn forever."""
+        See the module docstring: only for mechanisms that can turn forever.
+
+        on_poll: optional callback, called ~20x a second while spinning with
+        {servo_id: feedback dict} - for live readouts and logging."""
         if seconds <= 0:
             raise ValueError("seconds must be positive")
         if abs(speed) > MAX_WHEEL_SPEED:
@@ -149,10 +152,12 @@ class ServoPair:
             log.info("pair %s spinning at %d steps/s for %.2f s", self.ids, speed, seconds)
             deadline = _monotonic() + seconds
             while _monotonic() < deadline:
-                for sid in self.ids:  # keep an eye on them rather than sleeping blind
-                    errors = self._bus.feedback(sid)["errors"]
-                    if errors:
-                        raise StsBusError(f"servo {sid} reported {errors} while spinning - stopped early")
+                states = {sid: self._bus.feedback(sid) for sid in self.ids}  # watch them, don't sleep blind
+                for sid, fb in states.items():
+                    if fb["errors"]:
+                        raise StsBusError(f"servo {sid} reported {fb['errors']} while spinning - stopped early")
+                if on_poll is not None:
+                    on_poll(states)
                 _sleep(min(0.05, max(0.0, deadline - _monotonic())))
         finally:
             self.stop()
