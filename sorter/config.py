@@ -58,8 +58,14 @@ MOCK_WEIGHT_BASELINE_G: float = 45.0
 MOCK_WEIGHT_JITTER_G: float = 0.5
 
 # --- Inductive metal sensor wiring -----------------------------------------
-# NPN normally-open, active-low (LOW = metal detected). 10k pull-up to 3.3V.
-METAL_SENSOR_PIN: int = 27  # physical pin 13
+# LJ18A3-8-Z/BX: NPN, normally open, so its output only ever pulls the line to GND.
+#   brown -> + supply (6-36 V)     blue -> GND, shared with the Pi     black -> the GPIO pin
+# The Pi's INTERNAL pull-up holds the line at 3.3 V; metal present pulls it LOW. No external
+# resistor. (On a Pi 5 this needs the lgpio backend - see requirements.txt.)
+# Before wiring black to the Pi: meter black-to-blue with no metal near. It must NOT sit at
+# the supply voltage - some clones pull it up internally, and that needs a divider first.
+METAL_SENSOR_PIN: int = int(os.getenv("METAL_SENSOR_PIN", "17"))  # BCM 17 = physical pin 11
+METAL_SENSOR_PULL_UP: bool = True
 METAL_SENSOR_DEBOUNCE_S: float = 0.05
 METAL_SENSOR_DEBOUNCE_SAMPLES: int = 3
 

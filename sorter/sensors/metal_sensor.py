@@ -1,7 +1,8 @@
 """Inductive proximity sensor (LJ18A3-8-Z/BX) wrapper.
 
 Real mode reads the GPIO digital input, active-low (LOW = metal detected),
-with a simple majority-vote debounce. Mock mode returns a randomly toggling
+using the Pi's internal pull-up (the NPN output only pulls to GND), with a
+simple majority-vote debounce. Mock mode returns a randomly toggling
 simulated trigger so the rest of the pipeline can be exercised with no
 hardware attached.
 
@@ -30,16 +31,25 @@ class MetalSensor:
         else:
             from gpiozero import DigitalInputDevice
 
-            # Sensor output already has a hardware 10k pull-up to 3.3V, so we
-            # don't enable the Pi's internal pull-up here.
-            self._pin = DigitalInputDevice(config.METAL_SENSOR_PIN, pull_up=False)
-            log.info("MetalSensor initialized on GPIO%d (active-low)", config.METAL_SENSOR_PIN)
+            if config.METAL_SENSOR_PULL_UP:
+                # Internal pull-up holds the line high; gpiozero then treats LOW as "active".
+                self._pin = DigitalInputDevice(config.METAL_SENSOR_PIN, pull_up=True)
+            else:
+                # An external pull-up is fitted: leave the pin floating, still active-low.
+                self._pin = DigitalInputDevice(config.METAL_SENSOR_PIN, pull_up=None, active_state=False)
+            log.info("MetalSensor initialized on GPIO%d (active-low, %s pull-up)", config.METAL_SENSOR_PIN,
+                     "internal" if config.METAL_SENSOR_PULL_UP else "external")
 
     def _raw_metal_present(self) -> bool:
         if self.mock:
             return random.random() < config.MOCK_METAL_TRIGGER_PROBABILITY
-        # Sensor is active-low: LOW (0) means metal detected.
-        return self._pin.value == 0
+        # Active-low is handled by gpiozero (see __init__): active = line LOW = metal detected.
+        return bool(self._pin.is_active)
+
+    def close(self) -> None:
+        if self._pin is not None:
+            self._pin.close()
+            self._pin = None
 
     def is_metal_present(
         self,
