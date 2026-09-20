@@ -29,6 +29,7 @@ from pathlib import Path
 # So this runs both as `python -m tests.run_pair` from sorter/ and as `python run_pair.py`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config
 from actuators.servo_pair import ServoPair
 from actuators.sts_bus import TICKS_PER_REV, StsBusError
 
@@ -82,7 +83,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--seconds", type=float, default=1.0, help="how long each run lasts (default 1.0)")
     ap.add_argument("--speed", type=int, default=200, help="steps/s (default 200 = ~18 deg/s; max ~3400)")
     ap.add_argument("--acc", type=int, default=20, help="x100 steps/s^2 ramp (default 20)")
-    ap.add_argument("--torque", type=int, default=300, help="torque limit 0-1000 (default 300 = 30%%)")
+    ap.add_argument("--torque", type=int, default=config.SERVO_TORQUE_LIMIT,
+                    help=f"torque limit 0-1000 (default {config.SERVO_TORQUE_LIMIT}, from config.SERVO_TORQUE_LIMIT)")
     ap.add_argument("--reverse", action="store_true", help="first run goes the other way")
     ap.add_argument("--one-way", action="store_true", help="don't run back afterwards")
     ap.add_argument("--pause", type=float, default=0.5, help="seconds stopped between the two runs")

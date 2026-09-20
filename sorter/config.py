@@ -93,6 +93,23 @@ SERVO_MOVE_SPEED: int = 800   # steps/s (4096 steps = one turn); 0 would mean "n
 SERVO_MOVE_ACC: int = 50      # x100 steps/s^2; 0 would mean "no ramp"
 SERVO_MOVE_SETTLE_S: float = 1.0
 
+# Per-servo zero (level) position, end stops and mirroring, measured on the rig by
+# tests/read_positions.py and used everywhere through actuators/calibration.py.
+# Torque limit for moving the bed, 0-1000 (600 = 60% of what the servo can give). 30% was too
+# little to reach the setpoints with the bed attached - and on a 2S pack (~8 V) the servos only
+# have about two thirds of their rated 12 V torque to begin with. Raise it if moves come up
+# short ("NOT REACHED"); lower it if you want the bed to give way more easily when blocked.
+SERVO_TORQUE_LIMIT: int = int(os.getenv("SERVO_TORQUE_LIMIT", "600"))
+
+# Safety margins, in ticks (11.4 ticks = 1 degree), measured inward from the RECORDED min/max:
+#   limit margin    -> where the servo's own EEPROM limits go (python -m actuators.calibration apply)
+#   setpoint margin -> where go_min()/go_max() actually stop, and the furthest move_rel() will go
+# The setpoint margin must be the larger one: the gap between them is room to overshoot a
+# setpoint without ever reaching the servo's limit, let alone the hard stop.
+SERVO_LIMIT_MARGIN: int = int(os.getenv("SERVO_LIMIT_MARGIN", "25"))        # ~2 deg
+SERVO_SETPOINT_MARGIN: int = int(os.getenv("SERVO_SETPOINT_MARGIN", "50"))  # ~4.4 deg
+SERVO_CALIBRATION_FILE: Path = Path(os.getenv("SERVO_CALIBRATION_FILE", Path(__file__).resolve().parent / "servo_calibration.json"))
+
 # --- Logging -----------------------------------------------------------
 LOG_DIR: Path = Path(__file__).resolve().parent / "logs"
 LOG_FILE: Path = LOG_DIR / "sorter.log"

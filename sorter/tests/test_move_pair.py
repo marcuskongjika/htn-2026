@@ -119,10 +119,13 @@ def test_both_goals_travel_in_one_packet(run):
     assert ids_in_packet == {43, 13}
 
 
-def test_gentle_torque_limit_applied_to_both(run):
+def test_configured_torque_limit_applied_to_both(run):
+    import config
     wire = PairWire({43: 2053, 13: 2840})
     run(wire)
-    assert wire.word(43, 48) == 300 and wire.word(13, 48) == 300
+    assert wire.word(43, 48) == config.SERVO_TORQUE_LIMIT and wire.word(13, 48) == config.SERVO_TORQUE_LIMIT
+    run(wire, "--torque", "450")
+    assert wire.word(43, 48) == 450
 
 
 def test_refuses_if_either_servo_would_clamp(run, capsys):

@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from actuators import servo_pair
+from actuators.calibration import Calibration
 from actuators.servo_pair import ServoPair
 from actuators.sts_bus import StsBus, StsBusError
 from tests.test_move_pair import PairWire
@@ -54,6 +55,12 @@ def test_startup_holds_current_position_with_torque_limit():
     assert wire.goals == {43: [2053], 13: [2840]}            # goal = where it already is: no jump
     assert wire.word(43, 48) == 400 and wire.word(13, 48) == 400
     assert wire.regs[43][40] == 1 and wire.regs[13][40] == 1  # holding
+
+
+def test_default_torque_limit_comes_from_config():
+    import config
+    pair, wire = make_pair()
+    assert wire.word(43, 48) == config.SERVO_TORQUE_LIMIT == 600
 
 
 def test_move_by_same_direction():
@@ -170,3 +177,48 @@ def test_mock_mode_touches_nothing():
     assert pair.move_by(100) is True
     pair.run_for(1.0)
     pair.close()
+
+
+# --- stored calibration ----------------------------------------------------------------
+def calibrated_pair(**kwargs):
+    cal = Calibration.from_measurements({43: 1786, 13: 3660}, {43: 1490, 13: 3955}, {43: 2080, 13: 3365})
+    wire = ModalPairWire({43: 1900, 13: 3500})
+    bus = StsBus("fake", serial_port=wire, echo=True, reply_timeout_s=0.01)
+    return ServoPair((43, 13), bus=bus, mock=False, calibration=cal, **kwargs), wire
+
+
+def test_move_rel_and_home_use_each_servos_zero_and_direction():
+    pair, wire = calibrated_pair()
+    assert pair.home() is True
+    assert pair.positions() == (1786, 3660)
+    assert pair.move_rel(+200) is True
+    assert pair.positions() == (1986, 3460)                   # 13 is mirrored in the calibration
+    assert pair.positions_rel() == (200, 200)
+
+
+def test_move_rel_cannot_leave_the_measured_travel():
+    pair, wire = calibrated_pair()
+    pair.move_rel(+9999)
+    assert pair.positions() == (2030, 3415)                   # the safe "max" setpoint, not the recorded end
+
+
+def test_direction_comes_from_calibration_unless_given():
+    pair, wire = calibrated_pair()
+    pair.move_by(100)
+    assert pair.positions() == (2000, 3400)                   # follower inverted by the calibration
+    pair2, wire2 = calibrated_pair(invert=(False, False))
+    pair2.move_by(100)
+    assert pair2.positions() == (2000, 3600)                  # explicit argument wins
+
+
+def test_move_rel_without_calibration_says_what_to_do():
+    pair, _ = make_pair()
+    with pytest.raises(KeyError, match="read_positions"):
+        pair.move_rel(100)
+
+
+def test_global_file_is_picked_up_by_default(isolated_calibration):
+    Calibration.from_measurements({43: 1786, 13: 3660}, {43: 1490, 13: 3955}, {43: 2080, 13: 3365}).save()
+    pair, wire = make_pair(positions={43: 1900, 13: 3500})    # no calibration passed in
+    pair.home()
+    assert pair.positions() == (1786, 3660)

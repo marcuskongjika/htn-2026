@@ -16,7 +16,7 @@ horns should turn the same way as seen from one side of the bed.
 
 Both goals go out in ONE sync-write packet, so the servos start in the same
 instant rather than one after the other. Moves are relative to wherever each
-servo is now, slow, and at a low torque limit. It asks before moving.
+servo is now and slow; torque limit from config.SERVO_TORQUE_LIMIT. It asks before moving.
 """
 from __future__ import annotations
 
@@ -64,7 +64,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--ticks", type=int, default=100, help="how far; negative reverses (default 100 = ~9 deg)")
     ap.add_argument("--speed", type=int, default=200, help="steps/s (default 200 = ~18 deg/s)")
     ap.add_argument("--acc", type=int, default=10, help="x100 steps/s^2 (default 10)")
-    ap.add_argument("--torque", type=int, default=300, help="torque limit 0-1000 (default 300 = 30%%)")
+    ap.add_argument("--torque", type=int, default=config.SERVO_TORQUE_LIMIT,
+                    help=f"torque limit 0-1000 (default {config.SERVO_TORQUE_LIMIT}, from config.SERVO_TORQUE_LIMIT)")
     ap.add_argument("--stay", action="store_true", help="don't move back to the start afterwards")
     ap.add_argument("--hold", action="store_true", help="leave torque on at the end")
     ap.add_argument("--yes", action="store_true", help="don't wait for Enter")
