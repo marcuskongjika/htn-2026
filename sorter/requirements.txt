@@ -11,6 +11,9 @@ pyserial>=3.5
 # GPIO access for the HX711 load cell and inductive metal sensor
 gpiozero>=2.0.1
 RPi.GPIO>=0.7.1; platform_machine == "aarch64" or platform_machine == "armv7l"
+# Raspberry Pi 5: RPi.GPIO does not support it. gpiozero needs lgpio as its backend there
+# (header pins are /dev/gpiochip4); with it installed gpiozero picks it up automatically.
+lgpio>=0.2.2.0; platform_machine == "aarch64"
 
 # .env loading
 python-dotenv>=1.0.1
