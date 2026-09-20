@@ -1,0 +1,18 @@
+{
+  "saved_at": "2026-09-19T21:44:33",
+  "note": "absolute servo ticks (0-4095). zero = mechanism level. Written by tests/read_positions.py",
+  "servos": {
+    "13": {
+      "zero": 3305,
+      "lower": 3016,
+      "upper": 3607,
+      "invert": false
+    },
+    "43": {
+      "zero": 2144,
+      "lower": 1842,
+      "upper": 2430,
+      "invert": true
+    }
+  }
+}
