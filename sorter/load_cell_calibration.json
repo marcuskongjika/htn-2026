@@ -1,0 +1,6 @@
+{
+  "saved_at": "2026-09-20T01:33:09",
+  "note": "grams = (raw - zero_offset) / reference_unit. Measured on the rig 2026-09-20: raw -194131 empty, raw -141857 with 250 g on -> 209.096 counts/g (10 kg bar cell, HX711 gain 128). The zero drifts - tare() at start-up; the counts/g does not.",
+  "zero_offset": -194131,
+  "reference_unit": 209.096
+}

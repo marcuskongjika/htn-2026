@@ -1,101 +1,125 @@
-"""HX711 + load cell wrapper.
+"""Load cell on an HX711: raw counts -> grams.
 
-Real mode bit-bangs the HX711 protocol on the configured GPIO pins using
-gpiozero. Mock mode (MOCK_HARDWARE=1) returns a randomized weight around a
-configurable baseline so the rest of the pipeline can be exercised with no
-hardware attached.
+Real mode reads the HX711 through sensors/hx711.py (DOUT/SCK pins from config).
+Mock mode (MOCK_HARDWARE=1) returns a randomized weight around a configurable
+baseline so the rest of the pipeline can be exercised with no hardware attached.
+
+    grams = (raw - zero_offset) / reference_unit        reference_unit = counts per gram
+
+Both numbers come from the saved calibration (config.LOAD_CELL_CALIBRATION_FILE,
+written by `python tests/load_cell_read.py`), falling back to the placeholders in
+config. The zero drifts with temperature and with whatever is bolted to the cell,
+so tare() at start-up and after every dump; the scale (counts per gram) is a
+property of the cell and only needs measuring once.
 
 Standalone bring-up:
     cd sorter
-    python -m sensors.load_cell
+    python -m sensors.load_cell            # tare, then stream grams
+    python tests/load_cell_read.py         # interactive: tare / calibrate / save
 """
 from __future__ import annotations
 
+import json
 import logging
 import random
+import statistics
 import time
+from datetime import datetime
+from pathlib import Path
 
 import config
 
 log = logging.getLogger(__name__)
 
-# Number of HX711 ADC bits.
-_HX711_BITS = 24
-_HX711_SIGN_BIT = 1 << 23
-_HX711_FULL_SCALE = 1 << 24
+
+def load_calibration(path: Path | None = None) -> dict:
+    """{"zero_offset": int, "reference_unit": float} from the saved file, else config's placeholders."""
+    path = Path(path or config.LOAD_CELL_CALIBRATION_FILE)
+    if path.exists():
+        data = json.loads(path.read_text())
+        return {"zero_offset": int(data["zero_offset"]), "reference_unit": float(data["reference_unit"])}
+    return {"zero_offset": config.HX711_ZERO_OFFSET, "reference_unit": config.HX711_REFERENCE_UNIT}
+
+
+def save_calibration(zero_offset: int, reference_unit: float, path: Path | None = None, note: str = "") -> Path:
+    path = Path(path or config.LOAD_CELL_CALIBRATION_FILE)
+    path.write_text(json.dumps({
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "note": note or "grams = (raw - zero_offset) / reference_unit. Written by tests/load_cell_read.py",
+        "zero_offset": int(zero_offset),
+        "reference_unit": float(reference_unit),
+    }, indent=2) + "\n")
+    return path
 
 
 class LoadCell:
-    """Wraps an HX711 amplifier feeding a single load cell.
+    """An HX711 amplifier feeding a single load cell."""
 
-    In real mode this bit-bangs the HX711 serial protocol directly on
-    DOUT/SCK using gpiozero pins, since HX711 is a simple synchronous
-    protocol (no library dependency needed beyond GPIO access).
-    """
-
-    def __init__(self, mock: bool | None = None) -> None:
+    def __init__(self, mock: bool | None = None, hx711=None) -> None:
+        """hx711: an already-built driver (the tests pass one on fake pins)."""
         self.mock = config.MOCK_HARDWARE if mock is None else mock
-        self._zero_offset = config.HX711_ZERO_OFFSET
-        self._reference_unit = config.HX711_REFERENCE_UNIT
+        calibration = load_calibration()
+        self._zero_offset = calibration["zero_offset"]
+        self._reference_unit = calibration["reference_unit"]
         self._mock_current_g = config.MOCK_WEIGHT_BASELINE_G
+        self._hx = None
 
         if self.mock:
             log.info("LoadCell running in MOCK mode (no GPIO access)")
-            self._dout = None
-            self._sck = None
-        else:
-            from gpiozero import DigitalInputDevice, DigitalOutputDevice
+            return
 
-            self._dout = DigitalInputDevice(config.HX711_DOUT_PIN, pull_up=False)
-            self._sck = DigitalOutputDevice(config.HX711_SCK_PIN)
-            self._sck.off()
-            log.info(
-                "LoadCell initialized on DOUT=GPIO%d SCK=GPIO%d",
-                config.HX711_DOUT_PIN,
-                config.HX711_SCK_PIN,
-            )
+        if hx711 is None:
+            from sensors.hx711 import HX711
 
-    # -- low-level HX711 protocol -------------------------------------------------
-    def _read_raw(self) -> int:
-        """Read one 24-bit two's-complement sample from the HX711."""
+            hx711 = HX711(config.HX711_DOUT_PIN, config.HX711_SCK_PIN, gain=config.HX711_GAIN)
+        self._hx = hx711
+        log.info("LoadCell on DOUT=GPIO%d SCK=GPIO%d, zero=%d, %.3f counts/g",
+                 config.HX711_DOUT_PIN, config.HX711_SCK_PIN, self._zero_offset, self._reference_unit)
+
+    # -- calibration ------------------------------------------------------------------
+    @property
+    def zero_offset(self) -> int:
+        return self._zero_offset
+
+    @property
+    def reference_unit(self) -> float:
+        return self._reference_unit
+
+    def read_raw(self, samples: int = 1) -> int:
+        """Raw HX711 counts (median of `samples`)."""
         if self.mock:
             jitter = random.uniform(-config.MOCK_WEIGHT_JITTER_G, config.MOCK_WEIGHT_JITTER_G)
-            grams = self._mock_current_g + jitter
-            return int(grams * self._reference_unit) + self._zero_offset
+            return int((self._mock_current_g + jitter) * self._reference_unit) + self._zero_offset
+        return self._hx.read_raw() if samples <= 1 else self._hx.read_median(samples)
 
-        # Wait for DOUT to go low, signalling data ready.
-        timeout = time.monotonic() + 1.0
-        while self._dout.value == 1:
-            if time.monotonic() > timeout:
-                raise TimeoutError("HX711 not ready (DOUT stayed high)")
-            time.sleep(0.001)
+    def _read_raw(self) -> int:  # kept for callers of the old private name
+        return self.read_raw()
 
-        count = 0
-        for _ in range(_HX711_BITS):
-            self._sck.on()
-            count = (count << 1) | self._dout.value
-            self._sck.off()
+    def tare(self, samples: int = 15) -> int:
+        """Zero the scale: the median of `samples` raw readings becomes the new offset."""
+        self._zero_offset = int(statistics.median(self.read_raw() for _ in range(samples)))
+        log.info("Tared load cell: zero_offset=%d", self._zero_offset)
+        return self._zero_offset
 
-        # 25th pulse selects gain/channel for the *next* read (channel A, gain 128).
-        self._sck.on()
-        self._sck.off()
+    def calibrate(self, known_grams: float, samples: int = 15) -> float:
+        """With a known weight on the (already tared) scale, work out counts per gram."""
+        if known_grams <= 0:
+            raise ValueError("known weight must be positive")
+        loaded = statistics.median(self.read_raw() for _ in range(samples))
+        unit = (loaded - self._zero_offset) / known_grams
+        if abs(unit) < 1e-6:
+            raise ValueError("the reading did not change with the weight on - is it on the cell, and was the scale tared empty?")
+        self._reference_unit = unit
+        log.info("Calibrated load cell: %.3f counts/g%s", unit, "  (negative: A+/A- are swapped, handled in software)" if unit < 0 else "")
+        return unit
 
-        if count & _HX711_SIGN_BIT:
-            count -= _HX711_FULL_SCALE
-        return count
+    def save(self) -> Path:
+        return save_calibration(self._zero_offset, self._reference_unit)
 
     # -- public API -------------------------------------------------------------
-    def tare(self, samples: int = 15) -> None:
-        """Zero the scale by averaging `samples` raw readings as the new offset."""
-        readings = [self._read_raw() for _ in range(samples)]
-        self._zero_offset = sum(readings) // len(readings)
-        log.info("Tared load cell: zero_offset=%d", self._zero_offset)
-
-    def read_weight_g(self) -> float:
-        """Return a single weight sample in grams (not debounced/averaged)."""
-        raw = self._read_raw()
-        grams = (raw - self._zero_offset) / self._reference_unit
-        return grams
+    def read_weight_g(self, samples: int = 1) -> float:
+        """Weight in grams. samples > 1 takes the median of that many reads (10 reads = ~1 s)."""
+        return (self.read_raw(samples) - self._zero_offset) / self._reference_unit
 
     def stable_reading(
         self,
@@ -128,17 +152,23 @@ class LoadCell:
         )
         return last_avg
 
+    def close(self) -> None:
+        if self._hx is not None:
+            self._hx.close()
+            self._hx = None
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cell = LoadCell()
     print(f"MOCK_HARDWARE={config.MOCK_HARDWARE}")
-    print("Taring...")
+    print("Taring (keep the scale empty)...")
     cell.tare()
     print("Streaming live readings (Ctrl+C to stop):")
     try:
         while True:
-            print(f"  weight = {cell.read_weight_g():7.2f} g")
-            time.sleep(0.3)
+            print(f"  weight = {cell.read_weight_g(samples=3):8.2f} g")
     except KeyboardInterrupt:
         print("\nStopped.")
+    finally:
+        cell.close()
