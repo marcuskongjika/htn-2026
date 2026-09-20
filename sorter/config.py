@@ -53,7 +53,7 @@ LOAD_CELL_CALIBRATION_FILE: Path = Path(os.getenv("LOAD_CELL_CALIBRATION_FILE", 
 # grams = (raw - HX711_ZERO_OFFSET) / HX711_REFERENCE_UNIT. The zero drifts with temperature
 # and with anything bolted to the cell, so LoadCell.tare() at start-up; the counts/g does not.
 HX711_REFERENCE_UNIT: float = 209.096
-HX711_ZERO_OFFSET: int = -194131
+HX711_ZERO_OFFSET: int = -196640   # -194131 first; empty scale then read -12 g, so moved by -12 g = -2509 counts
 
 # Weight thresholds (grams).
 WEIGHT_TRIGGER_G: float = 15.0          # crossing this wakes IDLE -> MEASURING
