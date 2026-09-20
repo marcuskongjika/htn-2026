@@ -20,8 +20,8 @@ import logging.handlers
 import time
 
 import config
-from actuators.servo_controller import ServoController
-from logic.decision import fuse
+from actuators.servo_pair import ServoPair
+from logic.decision import sort_side
 from sensors.load_cell import LoadCell
 from sensors.metal_sensor import MetalSensor
 from vision.camera import capture_frame
@@ -68,16 +68,17 @@ class SorterStateMachine:
         self.state = State.IDLE
         self.load_cell = LoadCell()
         self.metal_sensor = MetalSensor()
-        self.servos = ServoController()
+        self.pair = ServoPair((config.SERVO_LEADER_ID, config.SERVO_FOLLOWER_ID))
 
         # Populated across a single pass through the pipeline.
         self.weight_g: float = 0.0
         self.metal_present: bool = False
-        self.material_result: dict = {}
-        self.verdict: str | None = None
+        self.classification: dict = {}
+        self.plastic: bool = False
+        self.side: str | None = None
 
         log.info("State machine initialized (MOCK_HARDWARE=%s)", config.MOCK_HARDWARE)
-        self.servos.home()
+        self.pair.go_level()
 
     def _transition(self, new_state: State) -> None:
         log.info("transition: %s -> %s", self.state.value, new_state.value)
@@ -86,8 +87,16 @@ class SorterStateMachine:
     def _reset_item_state(self) -> None:
         self.weight_g = 0.0
         self.metal_present = False
-        self.material_result = {}
-        self.verdict = None
+        self.classification = {}
+        self.plastic = False
+        self.side = None
+
+    def close(self) -> None:
+        """Release the servo bus (torque off) and the sensor. Safe to call twice."""
+        try:
+            self.pair.close()
+        finally:
+            self.metal_sensor.close()
 
     # -- state handlers -----------------------------------------------------
     def _handle_idle(self) -> None:
@@ -109,32 +118,30 @@ class SorterStateMachine:
 
     def _handle_classifying(self) -> None:
         frame = capture_frame()
-        self.material_result = classify_material(frame)
-        log.info("classified: %s", self.material_result)
+        self.classification = classify_material(frame)
+        log.info("classified: %s", self.classification)
         self._transition(State.DECIDING)
 
     def _handle_deciding(self) -> None:
-        self.verdict = fuse(self.weight_g, self.metal_present, self.material_result)
+        self.plastic = bool(self.classification.get("plastic", False))
+        self.side = sort_side(self.plastic, self.metal_present)
         log.info(
-            "decision: verdict=%s (weight=%.2fg metal_present=%s material=%s)",
-            self.verdict,
-            self.weight_g,
+            "decision: side=%s (plastic=%s metal_present=%s classification=%s)",
+            self.side,
+            self.plastic,
             self.metal_present,
-            self.material_result,
+            self.classification,
         )
         self._transition(State.ACTUATING)
 
     def _handle_actuating(self) -> None:
-        if self.verdict == "flagged":
-            self.servos.move_flagged()
-        else:
-            self.servos.move_safe()
-        log.info("actuated: verdict=%s", self.verdict)
+        arrived = self.pair.go_to(self.side)
+        log.info("actuated: side=%s arrived=%s", self.side, arrived)
         self._transition(State.RESETTING)
 
     def _handle_resetting(self) -> None:
         time.sleep(config.RESETTING_PAUSE_S)
-        self.servos.home()
+        self.pair.go_level()
         self._reset_item_state()
         self._transition(State.IDLE)
 
@@ -170,9 +177,9 @@ class SorterStateMachine:
             self.step()
         while self.state != State.RESETTING:
             self.step()
-        final_verdict = self.verdict  # snapshot before RESETTING clears item state
+        final_side = self.side  # snapshot before RESETTING clears item state
         self.step()  # RESETTING -> IDLE
-        log.info("Cycle complete: verdict=%s", final_verdict)
+        log.info("Cycle complete: side=%s", final_side)
 
 
 SorterStateMachine._HANDLERS = {
@@ -189,14 +196,17 @@ def main() -> None:
     _configure_logging()
     machine = SorterStateMachine()
 
-    if config.MOCK_HARDWARE:
-        # In mock mode there's no real weight event to wait on forever, so
-        # run one deterministic end-to-end cycle and exit — this is what the
-        # README's "run with MOCK_HARDWARE=1" acceptance check exercises.
-        machine.run_one_cycle()
-        return
+    try:
+        if config.MOCK_HARDWARE:
+            # In mock mode there's no real weight event to wait on forever, so
+            # run one deterministic end-to-end cycle and exit — this is what the
+            # README's "run with MOCK_HARDWARE=1" acceptance check exercises.
+            machine.run_one_cycle()
+            return
 
-    machine.run_forever()
+        machine.run_forever()
+    finally:
+        machine.close()
 
 
 if __name__ == "__main__":

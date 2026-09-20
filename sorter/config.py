@@ -92,6 +92,11 @@ SERVO_BAUDRATE: int = 1_000_000
 SERVO_ID_SAFE_GATE: int = int(os.getenv("SERVO_ID_SAFE_GATE", "1"))
 SERVO_ID_FLAGGED_GATE: int = int(os.getenv("SERVO_ID_FLAGGED_GATE", "2"))
 
+# The two servos that tilt the sorting bed as a leader/follower pair, matching
+# the IDs in servo_calibration.json. main.py drives these through ServoPair.
+SERVO_LEADER_ID: int = int(os.getenv("SERVO_LEADER_ID", "43"))
+SERVO_FOLLOWER_ID: int = int(os.getenv("SERVO_FOLLOWER_ID", "13"))
+
 # Position placeholders (STS3215 range is 0-4095 for a 360-degree servo).
 # TUNE THESE on real hardware during bring-up.
 SERVO_HOME_POSITION: int = 2048

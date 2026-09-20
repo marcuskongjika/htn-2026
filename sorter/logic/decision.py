@@ -1,41 +1,38 @@
-"""Decision fusion: combine sensor and vision signals into a bin verdict.
+"""Decision rule: turn the sensor + vision signals into a tilt direction.
 
 Pure function, no I/O — easily unit-testable in isolation from any hardware
 or network call (see tests/test_decision.py).
 """
 from __future__ import annotations
 
-Verdict = str  # "safe" | "flagged"
+# ServoPair setpoint names (actuators/servo_pair.py: go_min / go_max). Returning
+# these directly keeps main.py a one-liner: `pair.go_to(sort_side(...))`.
+PLASTIC_BIN: str = "min"   # plastic AND no metal  -> go_min
+OTHER_BIN: str = "max"     # every other case      -> go_max
 
-SAFE: Verdict = "safe"
-FLAGGED: Verdict = "flagged"
 
+def sort_side(plastic: bool, metal_present: bool) -> str:
+    """Which tilt setpoint an item goes to.
 
-def fuse(weight_g: float, metal_present: bool, material_result: dict) -> Verdict:
-    """Fuse sensor readings and Gemini's material classification into a verdict.
-
-    Fusion rule (deliberately simple and conservative for a 32-hour build):
-        flagged if metal_present OR material_result["likely_contains_battery"]
-        else safe
+    Rule (deliberately simple):
+        plastic AND NOT metal_present -> PLASTIC_BIN ("min")
+        every other case             -> OTHER_BIN  ("max")
 
     Rationale:
-    - The inductive sensor is a fast, cheap, high-precision signal for bare
-      metal (battery terminals, casings) — any positive hit is enough to
-      flag on its own, no need to corroborate it with vision.
-    - Gemini's `likely_contains_battery` already encodes visual cues the
-      metal sensor can miss (a battery sealed inside plastic/cardboard with
-      no exposed metal). It fails toward True on classifier errors/timeouts
-      (see vision/classifier.py), so treating it as a standalone flag signal
-      is safe by construction.
-    - `weight_g` is intentionally NOT used in the fusion rule yet. It's
-      captured and passed through as a trigger for entering MEASURING (see
-      main.py's WEIGHT_TRIGGER_G) and as telemetry for future tuning (e.g.
-      an implausibly heavy small item could become its own signal), but
-      there isn't enough hackathon time to derive a reliable weight-based
-      battery heuristic, so it's reserved rather than guessed at.
-    """
-    likely_battery = bool(material_result.get("likely_contains_battery", True))
+    - The plastic bin is only for clean plastic: Gemini must say plastic AND the
+      inductive sensor must read no metal. A metal hit is a fast, high-precision
+      veto (metal-cased items, foil-lined packaging), so any positive metal
+      reading sends the item to the other side regardless of what vision saw.
+    - Gemini's `likely_contains_battery` is still reported by the classifier for
+      logging, but it does NOT affect direction — sorting is purely plastic-vs-not
+      with metal as an override.
+    - The classifier fails toward `plastic=False` on errors/timeouts (see
+      vision/classifier.py), so an unreachable model sends the item to OTHER_BIN,
+      the conservative default here.
 
-    if metal_present or likely_battery:
-        return FLAGGED
-    return SAFE
+    Flipping which physical side is which is a one-line change: swap the two
+    constants above.
+    """
+    if plastic and not metal_present:
+        return PLASTIC_BIN
+    return OTHER_BIN

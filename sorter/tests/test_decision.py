@@ -1,4 +1,4 @@
-"""Unit tests for logic.decision.fuse — pure function, no I/O, no mocking needed.
+"""Unit tests for logic.decision.sort_side — pure function, no I/O, no mocking.
 
 Run with:
     cd sorter
@@ -13,47 +13,39 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from logic.decision import FLAGGED, SAFE, fuse
-
-NOT_BATTERY = {"plastic": False, "plastic_confidence": 0.1, "likely_contains_battery": False, "confidence": 0.9}
-IS_BATTERY = {"plastic": True, "plastic_confidence": 0.8, "likely_contains_battery": True, "confidence": 0.9}
+from logic.decision import OTHER_BIN, PLASTIC_BIN, sort_side
 
 
-def test_safe_when_no_metal_and_no_battery_material():
-    assert fuse(weight_g=50.0, metal_present=False, material_result=NOT_BATTERY) == SAFE
+def test_plastic_and_no_metal_goes_to_plastic_bin():
+    assert sort_side(plastic=True, metal_present=False) == PLASTIC_BIN
 
 
-def test_flagged_when_metal_present_even_if_material_looks_safe():
-    assert fuse(weight_g=50.0, metal_present=True, material_result=NOT_BATTERY) == FLAGGED
+def test_plastic_but_metal_goes_to_other_bin():
+    # Metal is a veto: even something vision calls plastic goes the other way.
+    assert sort_side(plastic=True, metal_present=True) == OTHER_BIN
 
 
-def test_flagged_when_material_says_battery_even_without_metal():
-    assert fuse(weight_g=50.0, metal_present=False, material_result=IS_BATTERY) == FLAGGED
+def test_not_plastic_no_metal_goes_to_other_bin():
+    assert sort_side(plastic=False, metal_present=False) == OTHER_BIN
 
 
-def test_flagged_when_both_metal_and_battery_material():
-    assert fuse(weight_g=50.0, metal_present=True, material_result=IS_BATTERY) == FLAGGED
+def test_not_plastic_and_metal_goes_to_other_bin():
+    assert sort_side(plastic=False, metal_present=True) == OTHER_BIN
 
 
-def test_weight_does_not_affect_verdict():
-    # Weight is reserved for future tuning; it must not change the outcome.
-    low = fuse(weight_g=0.1, metal_present=False, material_result=NOT_BATTERY)
-    high = fuse(weight_g=5000.0, metal_present=False, material_result=NOT_BATTERY)
-    assert low == high == SAFE
-
-
-def test_missing_likely_contains_battery_key_fails_toward_caution():
-    # A malformed/partial material_result must not accidentally read as safe.
-    assert fuse(weight_g=50.0, metal_present=False, material_result={"material": "?"}) == FLAGGED
+def test_plastic_bin_only_for_clean_plastic():
+    # Exactly one of the four combinations reaches the plastic bin.
+    combos = [(p, m) for p in (True, False) for m in (True, False)]
+    to_plastic = [(p, m) for (p, m) in combos if sort_side(p, m) == PLASTIC_BIN]
+    assert to_plastic == [(True, False)]
 
 
 _TESTS = [
-    test_safe_when_no_metal_and_no_battery_material,
-    test_flagged_when_metal_present_even_if_material_looks_safe,
-    test_flagged_when_material_says_battery_even_without_metal,
-    test_flagged_when_both_metal_and_battery_material,
-    test_weight_does_not_affect_verdict,
-    test_missing_likely_contains_battery_key_fails_toward_caution,
+    test_plastic_and_no_metal_goes_to_plastic_bin,
+    test_plastic_but_metal_goes_to_other_bin,
+    test_not_plastic_no_metal_goes_to_other_bin,
+    test_not_plastic_and_metal_goes_to_other_bin,
+    test_plastic_bin_only_for_clean_plastic,
 ]
 
 

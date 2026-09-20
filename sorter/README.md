@@ -5,7 +5,8 @@ battery. A load cell (HX711) and an inductive metal sensor cross-check a
 
 Gemini photo classification of the item (whether it is plastic, and whether it
 likely contains a hidden battery), then drive two STS3215 smart servos to tilt
-the item into a "safe" or "flagged" bin.
+the item into the "plastic" bin or the "other" bin. Clean plastic (Gemini says
+plastic AND no metal detected) goes one way; everything else goes the other.
 
 
 The pipeline is an explicit state machine (`main.py`):
@@ -151,11 +152,11 @@ everything in and running `main.py` cold:
 5. **Bring up the servo bus — see "Servo bring-up" below.** Loopback first
    (no servo attached), then scan, then a single move with the horn free,
    and only then `python -m actuators.servo_controller`.
-6. **Run `logic/decision.py`'s fusion function against printed
-   sensor/vision output with servos disconnected.** Feed real
-   weight/metal/material readings from steps 2-4 into `fuse()` by hand (or
-   via `python -m tests.test_decision`) and sanity-check the verdicts
-   before anything can physically move.
+6. **Run `logic/decision.py`'s `sort_side()` against printed sensor/vision
+   output with servos disconnected.** Feed real metal + plastic readings from
+   steps 2-4 into `sort_side(plastic, metal_present)` by hand (or via
+   `python -m tests.test_decision`) and sanity-check which bin each combination
+   picks before anything can physically move.
 7. **Run `main.py` fully on the shared battery rail with a real test
    item.** Only after 1-6 pass, set `MOCK_HARDWARE=0` and run
    `python main.py` with power to the full system and a real item.
@@ -224,15 +225,24 @@ Setting both to the same ID is the single-servo build: one servo tilts either
 way from home. A USB bus adapter still works - set `SERVO_PORT=/dev/ttyACM0`;
 the echo is auto-detected either way.
 
-## Fusion rule
+## Sorting rule
 
-`logic/decision.py`'s `fuse()` flags an item if the metal sensor detects
-metal **or** Gemini's classification says `likely_contains_battery`,
-whichever fires first — weight is captured and used to trigger the
-`IDLE -> MEASURING` transition but does not currently affect the verdict
-(reserved for future tuning). See the docstring in that file for the full
-rationale, including why the classifier fails toward "flagged" rather than
-"safe" on errors/timeouts.
+`logic/decision.py`'s `sort_side(plastic, metal_present)` decides which way the
+bed tilts:
+
+- **`plastic` AND no metal → the plastic bin** (`ServoPair.go_min()`). Only
+  clean plastic goes here: Gemini must call it plastic *and* the inductive
+  sensor must read no metal.
+- **every other case → the other bin** (`go_max()`) — any metal hit, or anything
+  Gemini does not call plastic. Metal is a fast, high-precision veto.
+
+The bed rests at `go_level()` between items. Weight is captured and used to
+trigger the `IDLE -> MEASURING` transition but does not affect direction.
+Gemini still reports `likely_contains_battery`, but it is logged only and no
+longer influences sorting. The classifier fails toward `plastic=False` on
+errors/timeouts, so an unreachable model sends the item to the other bin.
+To flip which physical side is which, swap `PLASTIC_BIN`/`OTHER_BIN` in
+`logic/decision.py`.
 
 ## Directory structure
 
@@ -247,11 +257,12 @@ sorter/
 │   └── classifier.py             # Gemini plastic + battery classification
 ├── actuators/
 │   ├── sts_bus.py                # STS servo protocol over the Pi UART (half-duplex) + bring-up CLI
-│   └── servo_controller.py       # home / move_safe / move_flagged on top of sts_bus
+│   ├── servo_pair.py             # leader/follower bed pair: go_level / go_min / go_max (used by main.py)
+│   └── servo_controller.py       # legacy home / move_safe / move_flagged demo (not used by main.py)
 ├── logic/
-│   └── decision.py               # pure fusion function
+│   └── decision.py               # pure sort_side(plastic, metal) rule
 ├── tests/
-│   ├── test_decision.py          # unit tests for the fusion rule
+│   ├── test_decision.py          # unit tests for the sorting rule
 │   ├── test_sts_bus.py           # servo bus tests against a fake wire + fake servo
 │   └── test_nudge.py             # nudge tool against a simulated moving servo
 ├── tools/
