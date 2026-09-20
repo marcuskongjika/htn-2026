@@ -3,8 +3,9 @@
     hold LEVEL -> you place an item + press ENTER -> wait until GPIO17 gives one CONSISTENT
     answer -> tilt -> back to LEVEL -> repeat
 
-    line 0 = metal     -> go_max()
-    line 1 = no metal  -> go_min()          (--swap flips which side is which)
+    line 0 = metal     -> battery side
+    line 1 = no metal  -> non-battery side   (which physical end each one is: config.BATTERY_SIDE_SETPOINT;
+                                              --swap flips them for this run)
 
 "Consistent" means every sample for a whole window (default 1 s, sampled every 20 ms)
 agrees. A flickering sensor - an item at the edge of its range - never produces a
@@ -74,7 +75,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--hold-s", type=float, default=1.5, help="seconds to stay tilted so the item slides off (default 1.5)")
     ap.add_argument("--pause", type=float, default=2.0, help="seconds at level before reading again (default 2.0)")
     ap.add_argument("--cycles", type=int, default=0, help="stop after this many tilts (default 0 = until Ctrl+C)")
-    ap.add_argument("--swap", action="store_true", help="metal -> min and no metal -> max, instead of the other way round")
+    ap.add_argument("--swap", action="store_true", help="send metal to the non-battery side and vice versa (for this run only)")
     ap.add_argument("--auto", action="store_true",
                     help="don't wait for Enter before each cycle: read and tilt continuously (tilts an empty bed too)")
     ap.add_argument("--speed", type=int, default=250, help="steps/s (default 250 = ~22 deg/s)")
@@ -84,9 +85,12 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
 
     cal = Calibration.load()
-    side = {True: "min" if args.swap else "max", False: "max" if args.swap else "min"}  # key: metal?
+    # key: metal detected?  Values are side names; config maps them onto the min/max ends.
+    side = {True: config.NON_BATTERY_SIDE if args.swap else config.BATTERY_SIDE,
+            False: config.BATTERY_SIDE if args.swap else config.NON_BATTERY_SIDE}
     try:
-        targets = {name: tuple(cal[sid].setpoint(name, args.margin) for sid in IDS) for name in ("level", "min", "max")}
+        targets = {name: tuple(cal[sid].setpoint(name, args.margin) for sid in IDS)
+                   for name in ("level", config.BATTERY_SIDE, config.NON_BATTERY_SIDE)}
     except (KeyError, ValueError) as e:
         print(f"Can't use the calibration: {e}")
         return 2
@@ -104,7 +108,7 @@ def main(argv: list[str]) -> int:
             return 130
 
     sensor = pair = None
-    tilts = {"min": 0, "max": 0}
+    tilts = {config.BATTERY_SIDE: 0, config.NON_BATTERY_SIDE: 0}
     try:
         sensor = MetalSensor(mock=False)
         pair = ServoPair(IDS, torque_limit=args.torque, mock=False, calibration=cal)
@@ -143,10 +147,10 @@ def main(argv: list[str]) -> int:
                 return 1
             print(f"      level at {pair.positions()}")
             _sleep(args.pause)
-        print(f"\nDone: {tilts['max']} x max, {tilts['min']} x min.")
+        print(f"\nDone: {tilts[config.BATTERY_SIDE]} x battery side, {tilts[config.NON_BATTERY_SIDE]} x non-battery side.")
         return 0
     except KeyboardInterrupt:
-        print(f"\nStopped: {tilts['max']} x max, {tilts['min']} x min.")
+        print(f"\nStopped: {tilts[config.BATTERY_SIDE]} x battery side, {tilts[config.NON_BATTERY_SIDE]} x non-battery side.")
         if pair is not None:
             try:
                 pair.go_level(speed=args.speed)

@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
 from sensors import hx711 as hx711_module
-from sensors.hx711 import HX711, HX711Error, HX711NotReady, HX711Saturated
+from sensors.hx711 import HX711, HX711Error, HX711NotReady, HX711Saturated, HX711StuckLow
 from sensors.load_cell import LoadCell, load_calibration
 from tests import load_cell_read
 
@@ -34,6 +34,7 @@ class FakeChip:
         self.pulses = 0                  # rising edges since this word started
         self.sck = 0
         self.pulse_counts = []           # pulses used by each completed read
+        self.busy_polls = 0              # DOUT stays HIGH for a while after a word, like the real chip
         self.resets = 0
         self.closed = False
 
@@ -41,10 +42,14 @@ class FakeChip:
         return self.values[min(self.index, len(self.values) - 1)] & 0xFFFFFF
 
     def read_dout(self):
-        if self.pulses >= 25:            # polled again after a full read: next conversion is up
+        if self.pulses >= 25:            # word finished: converting again, DOUT high until it is done
             self.pulse_counts.append(self.pulses)
             self.index += 1
             self.pulses = 0
+            self.busy_polls = 1
+        if self.busy_polls:
+            self.busy_polls -= 1
+            return 1
         if self.pulses == 0:
             return 0 if self.ready else 1
         return (self._word() >> (24 - self.pulses)) & 1
@@ -98,6 +103,22 @@ def test_not_ready_is_reported_with_a_wiring_hint(chip_factory, monkeypatch):
     adc = HX711(5, 6, pins=chip_factory([0], ready=False))  # reset() swallows the first timeout quietly
     with pytest.raises(HX711NotReady, match="DOUT stayed high"):
         adc.read_raw(timeout_s=1.0)
+
+
+def test_a_line_stuck_low_is_an_error_not_zero_grams():
+    class DeadLine:                                  # unpowered chip / DOUT and SCK swapped / wire off
+        def read_dout(self): return 0
+        def write_sck(self, level): pass
+        def close(self): pass
+
+    adc = HX711(5, 6, pins=DeadLine())
+    with pytest.raises(HX711StuckLow, match="stuck LOW"):
+        adc.read_raw()
+
+
+def test_a_genuine_zero_reading_is_still_allowed(chip_factory):
+    adc = HX711(5, 6, pins=chip_factory([0, 0, 0]))   # real chip: DOUT goes high after the word
+    assert adc.read_raw() == 0
 
 
 def test_saturated_reading_is_an_error_not_a_weight(chip_factory):

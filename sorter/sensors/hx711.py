@@ -41,6 +41,11 @@ class HX711NotReady(HX711Error):
     """DOUT never went low: chip unpowered, DOUT/SCK wired wrong, or SCK stuck high."""
 
 
+class HX711StuckLow(HX711Error):
+    """DOUT reads low all the time, so every sample comes out as a perfectly steady 0. A working
+    chip drives DOUT HIGH the moment a read finishes and keeps it there until the next conversion."""
+
+
 class HX711Saturated(HX711Error):
     """The ADC is pinned at full scale: overloaded cell, or a bridge wire (E+/E-/A+/A-) is off."""
 
@@ -160,6 +165,14 @@ class HX711:
             pins.write_sck(1)
             pins.write_sck(0)
             slowest = max(slowest, clock() - start)
+        # The chip raises DOUT as soon as the word has been clocked out and holds it high until
+        # the next conversion (>= 12 ms away). Still low right now = nothing is driving the line.
+        if pins.read_dout() == 0 and value == 0:
+            raise HX711StuckLow(
+                "HX711 DOUT is stuck LOW (every bit reads 0) - the chip is not driving it. Check: VCC on the "
+                "3.3 V pin and GND connected; DOUT/DT really on the DOUT GPIO and SCK on the SCK GPIO (not "
+                "swapped); no loose jumper"
+            )
         if value & 0x800000:
             value -= 1 << 24
         return value, slowest / 1000.0

@@ -6,7 +6,7 @@
 The load cell gates the whole pipeline: nothing is captured until an item's
 weight crosses WEIGHT_TRIGGER_G. On a trigger, SENSING lets the weight settle,
 then reads the metal sensor and classifies the camera frame for plastic, and
-the servo bed tilts (plastic with no metal -> min; everything else -> max),
+the servo bed tilts (metal detected -> battery side; no metal -> non-battery side),
 HOLDS for a few seconds, returns to level, and waits for the next item.
 Sensing never runs while the servos are moving or holding — the states are
 sequential.
@@ -29,7 +29,7 @@ import time
 
 import config
 from actuators.servo_pair import ServoPair
-from logic.decision import sort_side
+from logic.decision import describe, sort_side
 from sensors.load_cell import LoadCell
 from sensors.metal_sensor import MetalSensor
 from vision.camera import capture_frame
@@ -130,11 +130,12 @@ class SorterStateMachine:
         self.plastic = bool(self.classification.get("plastic", False))
         self.side = sort_side(self.plastic, self.metal_present)
         log.info(
-            "sensed: weight=%.2fg metal_present=%s plastic=%s -> side=%s (classification=%s)",
+            "sensed: weight=%.2fg metal_present=%s plastic=%s -> side=%s [%s] (classification=%s)",
             self.weight_g,
             self.metal_present,
             self.plastic,
             self.side,
+            describe(self.plastic, self.metal_present),
             self.classification,
         )
         self._transition(State.ACTUATING)

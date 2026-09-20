@@ -5,8 +5,10 @@ battery. A load cell (HX711) and an inductive metal sensor cross-check a
 
 Gemini photo classification of the item (whether it is plastic, and whether it
 likely contains a hidden battery), then drive two STS3215 smart servos to tilt
-the item into the "plastic" bin or the "other" bin. Clean plastic (Gemini says
-plastic AND no metal detected) goes one way; everything else goes the other.
+the item to the **battery side** or the **non-battery side**. The induction sensor
+alone decides: metal detected -> battery side, no metal -> non-battery side. The
+camera explains the result (plastic + metal = a possible hidden battery); it never
+moves an item.
 
 
 The pipeline is an explicit state machine (`main.py`) gated by the load cell —
@@ -19,7 +21,7 @@ WAITING -> (weight >= WEIGHT_TRIGGER_G) -> SENSING -> ACTUATING -> HOLDING -> RE
 
 WAITING polls the load cell. When an item's weight crosses `WEIGHT_TRIGGER_G`,
 SENSING lets it settle, reads the metal sensor, and classifies the camera frame;
-the bed then tilts (plastic with no metal -> min; everything else -> max), holds
+the bed then tilts (metal detected -> battery side; no metal -> non-battery side), holds
 for `TILT_HOLD_S` (default 5 s), returns to level, and waits for the next item.
 On real hardware the load cell tares at start-up and after each dump.
 
@@ -237,23 +239,28 @@ the echo is auto-detected either way.
 
 ## Sorting rule
 
-`logic/decision.py`'s `sort_side(plastic, metal_present)` decides which way the
-bed tilts:
+`logic/decision.py`, `sort_side(plastic, metal_present)`. **The induction sensor is the only
+thing that decides the side:**
 
-- **`plastic` AND no metal → the plastic bin** (`ServoPair.go_min()`). Only
-  clean plastic goes here: Gemini must call it plastic *and* the inductive
-  sensor must read no metal.
-- **metal, or anything not called plastic → the other bin** (`go_max()`). Metal
-  is a fast, high-precision veto.
+- **metal detected -> the battery side.** No two ways about it: whatever the camera thinks,
+  an item with metal in it never goes to the non-battery side.
+- **no metal -> the non-battery side.** That includes things that aren't plastic (paper,
+  glass, food): "not plastic" is not evidence of a battery, and nothing is assumed.
 
-The load cell gates the pipeline, so an item is only classified and sorted once
-its weight is sensed — every weighed item goes to one of the two bins (there is
-no "stay level" case; presence is already confirmed by weight). The bed rests at
-`go_level()` between items. Gemini still reports `likely_contains_battery`, but it
-is logged only and no longer influences sorting. The classifier fails toward
-`plastic=False` on errors/timeouts, so an unreachable model treats the item as
-non-plastic (→ the other bin). To flip which physical side is which, swap
-`PLASTIC_BIN`/`OTHER_BIN` in `logic/decision.py`.
+Gemini's answer (`plastic`, and its `likely_contains_battery` guess) is **logged, never acted
+on** - a camera can't see inside anything. What it adds is the explanation, from
+`describe()`: *plastic + metal* is the case this machine exists to catch, "looks like plastic
+but metal detected inside - possible hidden battery". If the Gemini call fails or times out,
+the classifier returns a result that claims nothing (`plastic: False,
+likely_contains_battery: False`) and the item is still sorted correctly, because the sensor
+reading is all that was needed.
+
+The code only ever says `battery` / `non_battery`. Which physical end of the bed each one is
+lives in one place: `BATTERY_SIDE_SETPOINT` in `config.py` (or `.env`) - `max` by default,
+so `non_battery` is `min`. Swap the bins on the table, change that one value. The bed rests
+at `go_level()` between items. In `main.py` the load cell gates the pipeline (an item is only
+scanned once its weight is sensed); `main_enter.py` is the same pipeline started by pressing
+Enter, with no load cell involved.
 
 ## Directory structure
 

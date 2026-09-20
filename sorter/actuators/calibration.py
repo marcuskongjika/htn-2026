@@ -38,7 +38,7 @@ import config
 log = logging.getLogger(__name__)
 
 POSITION_MAX = 4095
-SETPOINTS = ("level", "min", "max")
+SETPOINTS = ("level", "min", "max", config.BATTERY_SIDE, config.NON_BATTERY_SIDE)
 
 
 def limit_margin() -> int:
@@ -78,7 +78,8 @@ class ServoCal:
         return clamped
 
     def setpoint(self, name: str, margin: int | None = None) -> int:
-        """Absolute ticks for a named spot: "level" (also "zero"/"home"), "min" or "max".
+        """Absolute ticks for a named spot: "level" (also "zero"/"home"), "min", "max", or a
+        side name - "battery" / "non_battery" - which config maps onto min/max.
 
         min/max are this servo's OWN recorded tick at that end of the mechanism, so a
         mirrored servo automatically gets the opposite end of its range - which is what
@@ -86,10 +87,12 @@ class ServoCal:
         the recorded end (default config.SERVO_SETPOINT_MARGIN), which is further in than
         the limits `apply_limits` writes to the servo."""
         name = name.lower()
+        name = config.SIDE_SETPOINTS.get(name, name)   # "battery" / "non_battery" -> "max" / "min"
         if name in ("level", "zero", "home"):
             return self.zero
         if name not in ("min", "max"):
-            raise ValueError(f"unknown setpoint {name!r} - use level, min or max")
+            raise ValueError(f"unknown setpoint {name!r} - use level, min, max, "
+                             f"{config.BATTERY_SIDE} or {config.NON_BATTERY_SIDE}")
         if self.lower is None or self.upper is None:
             raise ValueError("end stops not measured yet - record min and max in tests/read_positions.py and save")
         margin = setpoint_margin() if margin is None else max(margin, limit_margin())

@@ -122,6 +122,19 @@ SERVO_MOVE_SETTLE_S: float = 1.0
 # short ("NOT REACHED"); lower it if you want the bed to give way more easily when blocked.
 SERVO_TORQUE_LIMIT: int = int(os.getenv("SERVO_TORQUE_LIMIT", "600"))
 
+# The two bins, by what goes in them. The decision logic only ever says "battery" or
+# "non_battery"; THIS is the one place that says which physical end of the bed each one is.
+# Swapped the bins over? Change "max" to "min" here (or set BATTERY_SIDE_SETPOINT in .env).
+BATTERY_SIDE: str = "battery"            # metal detected, or not clean plastic: could hide a battery
+NON_BATTERY_SIDE: str = "non_battery"    # plastic with no metal: safe
+BATTERY_SIDE_SETPOINT: str = os.getenv("BATTERY_SIDE_SETPOINT", "max").lower()   # "max" or "min"
+if BATTERY_SIDE_SETPOINT not in ("min", "max"):
+    raise ValueError(f"BATTERY_SIDE_SETPOINT must be 'min' or 'max', not {BATTERY_SIDE_SETPOINT!r}")
+SIDE_SETPOINTS: dict[str, str] = {
+    BATTERY_SIDE: BATTERY_SIDE_SETPOINT,
+    NON_BATTERY_SIDE: "min" if BATTERY_SIDE_SETPOINT == "max" else "max",
+}
+
 # Safety margins, in ticks (11.4 ticks = 1 degree), measured inward from the RECORDED min/max:
 #   limit margin    -> where the servo's own EEPROM limits go (python -m actuators.calibration apply)
 #   setpoint margin -> where go_min()/go_max() actually stop, and the furthest move_rel() will go

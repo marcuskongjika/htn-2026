@@ -10,7 +10,7 @@ The model reports a numeric `plastic_confidence`; this module derives the
 
 The model is instructed to return strict JSON only. The response is parsed
 and validated defensively — a malformed/non-JSON response, a network error,
-or a timeout all fall back to a cautious default rather than crashing the
+or a timeout all fall back to an empty "claims nothing" result rather than crashing the
 pipeline or silently calling something "safe".
 
 Mock mode returns a canned classification without calling the network.
@@ -45,12 +45,13 @@ sealed devices). When uncertain, prefer true.
 
 Respond with the JSON object only."""
 
-# Fail toward caution, not toward "safe", whenever the model can't be reached
-# or its response can't be trusted. The battery signal stays True (flag it);
-# plastic doesn't affect sorting, so its cautious default is simply False.
-_FALLBACK = {"plastic": False, "plastic_confidence": 0.0, "likely_contains_battery": True, "confidence": 0.0}
+# When the model can't be reached or its response can't be trusted, claim NOTHING: not plastic,
+# no battery, zero confidence. Vision never decides which side an item goes to (the induction
+# sensor does - logic/decision.py), so there is no "cautious" guess to make here, and a made-up
+# `likely_contains_battery: True` would just be a false statement in the logs.
+_FALLBACK = {"plastic": False, "plastic_confidence": 0.0, "likely_contains_battery": False, "confidence": 0.0}
 
-_MOCK_RESULT = {"plastic": True, "plastic_confidence": 0.87, "likely_contains_battery": True, "confidence": 0.87}
+_MOCK_RESULT = {"plastic": True, "plastic_confidence": 0.87, "likely_contains_battery": False, "confidence": 0.87}
 
 
 @dataclass
@@ -128,7 +129,7 @@ def classify_material(jpeg_bytes: bytes, mock: bool | None = None) -> dict:
         {"plastic": bool, "plastic_confidence": float,
          "likely_contains_battery": bool, "confidence": float}
     where `plastic` is `plastic_confidence > config.PLASTIC_CONFIDENCE_THRESHOLD`.
-    Never raises — on any error or timeout, returns the cautious fallback.
+    Never raises — on any error or timeout, returns the fallback, which claims nothing.
     """
     use_mock = config.MOCK_HARDWARE if mock is None else mock
 
@@ -143,10 +144,10 @@ def classify_material(jpeg_bytes: bytes, mock: bool | None = None) -> dict:
             log.info("Gemini classification: %s", result.to_dict())
             return result.to_dict()
         except concurrent.futures.TimeoutError:
-            log.error("Gemini call timed out after %.1fs; falling back to cautious default", config.GEMINI_TIMEOUT_S)
+            log.error("Gemini call timed out after %.1fs; falling back to the empty result (the metal sensor still decides the side)", config.GEMINI_TIMEOUT_S)
             return dict(_FALLBACK)
         except Exception:
-            log.exception("Gemini call failed; falling back to cautious default")
+            log.exception("Gemini call failed; falling back to the empty result (the metal sensor still decides the side)")
             return dict(_FALLBACK)
 
 
