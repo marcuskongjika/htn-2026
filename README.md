@@ -235,7 +235,7 @@ htn-2026/
 
 Built over one weekend at **Hack the North 2026** by
 
-**Sharisse Ji** · **[Zhi Wei Zhang](https://www.linkedin.com/in/zhiweizhang27)** · **Andrii Bessarab** · **Marcus Kongjika**
+**[Sharisse Ji](https://www.linkedin.com/in/sharisseji/)** · **[Zhi Wei Zhang](https://www.linkedin.com/in/zhiweizhang27)** · **[Andrii Bessarab](https://www.linkedin.com/in/andriibessarab/)** · **[Marcus Kongjika](https://www.linkedin.com/in/marcus-kongjika-b5476b2b8/)**
 
 <div align="center">
 
