@@ -46,6 +46,10 @@ class MetalSensor:
         # Active-low is handled by gpiozero (see __init__): active = line LOW = metal detected.
         return bool(self._pin.is_active)
 
+    def read(self) -> bool:
+        """One instantaneous sample, no debounce: True = metal (line LOW)."""
+        return self._raw_metal_present()
+
     def close(self) -> None:
         if self._pin is not None:
             self._pin.close()
