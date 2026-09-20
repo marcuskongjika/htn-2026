@@ -165,7 +165,7 @@ def test_malformed_model_output_falls_back_to_caution(fake_gemini):
     fake_gemini["response_text"] = "sorry, I can't do that"
     result = classify_material(FAKE_JPEG, mock=False)
     assert result == _FALLBACK
-    assert result["likely_contains_battery"] is True
+    assert result["likely_contains_battery"] is False   # an unreachable model claims nothing
 
 
 # --- failure handling ------------------------------------------------------
@@ -176,7 +176,7 @@ def test_exception_falls_back_to_caution(monkeypatch):
     monkeypatch.setattr(classifier, "_call_gemini", boom)
     result = classify_material(FAKE_JPEG, mock=False)
     assert result == _FALLBACK
-    assert result["likely_contains_battery"] is True
+    assert result["likely_contains_battery"] is False   # an unreachable model claims nothing
 
 
 def test_timeout_falls_back_to_caution(monkeypatch):
@@ -188,4 +188,4 @@ def test_timeout_falls_back_to_caution(monkeypatch):
     monkeypatch.setattr(config, "GEMINI_TIMEOUT_S", 0.1, raising=False)
     result = classify_material(FAKE_JPEG, mock=False)
     assert result == _FALLBACK
-    assert result["likely_contains_battery"] is True
+    assert result["likely_contains_battery"] is False   # an unreachable model claims nothing

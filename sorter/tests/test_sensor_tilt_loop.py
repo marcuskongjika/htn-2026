@@ -102,7 +102,7 @@ def test_metal_goes_to_max_and_comes_back_to_level(run, capsys):
     assert moves(wire, 43) == [LEVEL[0], MAX[0], LEVEL[0], MAX[0], LEVEL[0]]
     assert moves(wire, 13) == [LEVEL[1], MAX[1], LEVEL[1], MAX[1], LEVEL[1]]
     assert wire.regs[43][40] == 0 and sensor.closed       # torque released, pin released
-    assert "2 x max, 0 x min" in capsys.readouterr().out
+    assert "2 x battery side, 0 x non-battery side" in capsys.readouterr().out
 
 
 def test_no_metal_goes_to_min(run):
@@ -163,7 +163,7 @@ def test_default_waits_for_enter_before_every_cycle(run, monkeypatch, capsys):
     assert len(prompts) == 3                             # Enter, Enter, q
     assert prompts[0][1] == 0                            # the sensor was not even read before the first Enter
     assert moves(wire, 43) == [LEVEL[0], MAX[0], LEVEL[0], MAX[0], LEVEL[0]]
-    assert "2 x max, 0 x min" in capsys.readouterr().out
+    assert "2 x battery side, 0 x non-battery side" in capsys.readouterr().out
 
 
 def test_q_at_the_first_prompt_never_tilts(run, monkeypatch):

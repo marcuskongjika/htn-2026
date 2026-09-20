@@ -150,12 +150,14 @@ class ServoPair:
         return self.move_to(tuple(self.calibration[sid].to_abs(rel) for sid in self.ids), **kwargs)
 
     def go_to(self, name: str, margin: int | None = None, **kwargs) -> bool:
-        """Go to a recorded setpoint: "level", "min" or "max". Both servos start together, each
+        """Go to a recorded setpoint: "level", "min", "max", or a side name ("battery" /
+        "non_battery", mapped onto min/max by config). Both servos start together, each
         heading for its OWN recorded position at that end (so a mirrored servo turns the other
         way and the bed tilts as one). Returns True when both have arrived."""
         # margin: ticks inside the recorded end; default config.SERVO_SETPOINT_MARGIN
         targets = tuple(self.calibration[sid].setpoint(name, margin) for sid in self.ids)
-        log.info("pair %s -> %s %s", self.ids, name, targets)
+        end = config.SIDE_SETPOINTS.get(name.lower())
+        log.info("pair %s -> %s%s %s", self.ids, name, f" (= {end})" if end else "", targets)
         return self.move_to(targets, **kwargs)
 
     def go_level(self, **kwargs) -> bool:
@@ -166,6 +168,14 @@ class ServoPair:
 
     def go_max(self, **kwargs) -> bool:
         return self.go_to("max", **kwargs)
+
+    def go_battery_side(self, **kwargs) -> bool:
+        """Tilt toward the battery bin (whichever end config.BATTERY_SIDE_SETPOINT says that is)."""
+        return self.go_to(config.BATTERY_SIDE, **kwargs)
+
+    def go_non_battery_side(self, **kwargs) -> bool:
+        """Tilt toward the non-battery (clean plastic) bin."""
+        return self.go_to(config.NON_BATTERY_SIDE, **kwargs)
 
     def home(self, **kwargs) -> bool:
         """Level."""
