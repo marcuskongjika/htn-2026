@@ -266,23 +266,28 @@ class StsBus:
         self._transact(BROADCAST_ID, INST_SYNC_WRITE, bytes(params))
 
     @staticmethod
-    def _wheel_block(speed: int, acc: int) -> bytes:
-        """Same 7 bytes as _pos_ex_block; wheel mode ignores the position and reads the
-        speed as signed (sign-magnitude, bit 15 = reverse)."""
-        magnitude = min(abs(int(speed)), 0x7FFF)
-        encoded = magnitude | (0x8000 if speed < 0 else 0)
-        return bytes([acc & 0xFF, 0, 0, 0, 0, encoded & 0xFF, encoded >> 8])
+    def _encode_speed(speed: int) -> bytes:
+        """Signed speed as the servo wants it: sign-magnitude, bit 15 = reverse, low byte first."""
+        encoded = min(abs(int(speed)), 0x7FFF) | (0x8000 if speed < 0 else 0)
+        return bytes([encoded & 0xFF, encoded >> 8])
 
+    # Wheel-mode commands write ONLY the acceleration and goal-speed registers. They never
+    # touch the goal position (42-43): a speed command that reaches a servo which is in
+    # position mode must not be able to send it anywhere.
     def write_speed(self, servo_id: int, speed: int, acc: int = 0) -> int:
-        """Wheel mode only: spin at speed steps/s (negative = reverse, 0 = stop)."""
-        return self.write(servo_id, ADDR_ACC, self._wheel_block(speed, acc))
+        """Wheel mode: spin at speed steps/s (negative = reverse, 0 = stop)."""
+        self.write_byte(servo_id, ADDR_ACC, acc)
+        return self.write(servo_id, ADDR_GOAL_SPEED, self._encode_speed(speed))
 
     def sync_write_speed(self, spins: list[tuple[int, int, int]]) -> None:
-        """Wheel mode, several servos in one packet. spins = [(id, speed, acc), ...]. No replies."""
-        params = bytearray([ADDR_ACC, 7])
-        for servo_id, speed, acc in spins:
+        """Wheel mode, several servos: ramps set one by one, then every speed in ONE
+        packet so they all start (or stop) together. spins = [(id, speed, acc), ...]."""
+        for servo_id, _speed, acc in spins:
+            self.write_byte(servo_id, ADDR_ACC, acc)
+        params = bytearray([ADDR_GOAL_SPEED, 2])
+        for servo_id, speed, _acc in spins:
             params.append(servo_id)
-            params += self._wheel_block(speed, acc)
+            params += self._encode_speed(speed)
         self._transact(BROADCAST_ID, INST_SYNC_WRITE, bytes(params))
 
     def feedback(self, servo_id: int) -> dict:

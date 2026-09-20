@@ -28,11 +28,9 @@ class ModalPairWire(PairWire):
         self.spins = {sid: [] for sid in self.regs}
 
     def _apply(self, sid, address, data):
-        if self.regs[sid][33] == 1 and address == 41 and len(data) == 7:  # wheel-mode speed command
-            self.regs[sid][address:address + len(data)] = data
-            raw = int.from_bytes(data[5:7], "little")
+        if address == 46 and len(data) == 2 and self.regs[sid][33] == 1:  # goal speed, in wheel mode
+            raw = int.from_bytes(data, "little")
             self.spins[sid].append(-(raw & 0x7FFF) if raw & 0x8000 else raw)
-            return
         super()._apply(sid, address, data)
 
 
@@ -93,6 +91,18 @@ def test_run_for_spins_then_stops_and_restores_position_mode():
     assert wire.spins[13] == [-400, 0]                        # mirrored follower
     assert wire.regs[43][33] == 0 and wire.regs[13][33] == 0  # back in position mode
     assert wire.regs[43][40] == 1                             # and holding
+
+
+def test_speed_commands_never_move_a_servo_that_is_in_position_mode():
+    # Regression: stop() used to send a block that also wrote goal position 0. Sent to a
+    # servo already back in position mode (as close() does), that means "go to 0, full speed".
+    pair, wire = make_pair()
+    pair.run_for(1.0, speed=400)
+    pair.stop()
+    pair.stop()
+    pair.close()
+    assert (wire.word(43, 56), wire.word(13, 56)) == (2053, 2840)   # nobody went anywhere
+    assert 0 not in wire.goals[43] and 0 not in wire.goals[13]
 
 
 def test_run_for_negative_speed_reverses_both():
